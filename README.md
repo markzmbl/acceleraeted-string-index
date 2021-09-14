@@ -1,1 +1,1 @@
-# acceleraeted-string-index
+# accelerated-string-index
