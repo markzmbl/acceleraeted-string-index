@@ -1,5 +1,4 @@
 #include <assert.h>
-#include <variant>
 
 #include "helpers.h"
 #include "globals.h"

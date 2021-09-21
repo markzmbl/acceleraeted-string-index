@@ -2,7 +2,6 @@
 #include "globals.h"
 
 #include <vector>
-#include <variant>
 
 
 #ifndef _HELPERS_

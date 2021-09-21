@@ -1,2 +1,12 @@
+NVCC=/usr/local/cuda/bin/nvcc
+NVCC_FLAGS=-Xcompiler "-Wall -march=native -Wextra -fopenmp -mtune=native" -O2 --std c++17 -arch=sm_61 -lcublas -lcusolver
+
+.PHONY: all clean
+
+all: benchmark
+
 benchmark: benchmark.cu kernels.cuh globals.h helpers.h sindex.h
-	/usr/local/cuda/bin/nvcc -Xcompiler "-Wall -fmax-errors=5 -march=native -mtune=native" -O0 -g -G --std c++17 -gencode=arch=compute_61,code=sm_61 -lcublas -lcusolver -o benchmark benchmark.cu
+	$(NVCC) $(NVCC_FLAGS) -c benchmark.cu -o benchmark
+
+clean:
+	rm -f benchmark
