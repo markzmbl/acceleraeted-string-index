@@ -1,0 +1,2 @@
+benchmark: benchmark.cu kernels.cuh globals.h helpers.h sindex.h
+	/usr/local/cuda/bin/nvcc -Xcompiler "-Wall -fmax-errors=5 -march=native -mtune=native" -O0 -g -G --std c++17 -gencode=arch=compute_61,code=sm_61 -lcublas -lcusolver -o benchmark benchmark.cu
