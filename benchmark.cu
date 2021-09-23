@@ -38,9 +38,6 @@ int main() {
     const ix_size_t fstep = 5000;
     const ix_size_t bstep = 50;
 
-    // first batch size
-    // todo benchmarks. first attempt 50% keys
-
     // group meta data   
     std::vector<group_t> groups;
 

@@ -21,6 +21,29 @@ void read_keys(ky_t* keys, const std::string filename) {
     data.close();
 }
 
+inline void print_group(int num, group_t group) {
+    printf(
+        "[GROUP]\t%lu\n"
+        "\tstart:\t%lu\n"
+        "\tm:\t%lu\n"
+        "\tn:\t%u\n"
+        "\tavg:\t%f\n"
+        "\tmin:\t%f\n"
+        "\tmax:\t%f\n"
+        "\tfsteps:\t%u\n"
+        "\tbsteps:\t%u\n",
+        num,
+        group.start,
+        group.m,
+        group.n,
+        group.avg_err,
+        group.min_err,
+        group.max_err,
+        group.fsteps,
+        group.bsteps
+    );
+}
+
 inline void print_key(const ky_t* key) {
     for(ky_size_t char_i = 0; char_i < KEYSIZE; ++char_i) {
         ch_t char0 = *(((ch_t*)key) + char_i);

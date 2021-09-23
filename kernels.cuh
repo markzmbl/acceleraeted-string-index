@@ -23,7 +23,7 @@ __global__ void pair_prefix_kernel(
     const ix_size_t thid = blockDim.x * blockIdx.x + threadIdx.x;
     //if (!thid) printf("batchlen: %u\n", batch_len);
 
-    for (ix_size_t thid_i = thid; thid_i < batch_len - 1; thid_i += CUDACORES) {
+    for (ix_size_t thid_i = thid; thid_i < batch_len - 1; thid_i += gridDim.x * blockDim.x) {
         ky_t* key1 = (ky_t*) keys + thid_i;
         ky_t* key2 = (ky_t*) keys + thid_i + 1;
         for (ky_size_t char_i = 0; char_i < KEYLEN; ++char_i) {
@@ -61,7 +61,7 @@ __global__ void rmq_kernel(
     __syncthreads();
 
     // iterate batch in strides
-    for (ix_size_t thid_i = thid; thid_i < m; thid_i += CUDACORES) {
+    for (ix_size_t thid_i = thid; thid_i < m; thid_i += gridDim.x * blockDim.x) {
 
         loc_min_len = *(dev_pair_lens + thid_i);
         loc_max_len = *(dev_pair_lens + thid_i);
@@ -138,7 +138,7 @@ __global__ void column_major_kernel(
     // move pointer to group start
     keys += start_i;
 
-    for (ix_size_t thid_i = thid; thid_i < m * n; thid_i += CUDACORES) {
+    for (ix_size_t thid_i = thid; thid_i < m * n; thid_i += gridDim.x * blockDim.x) {
 
         ix_size_t key_i =  thid_i / n;
         ky_size_t feat_i = (thid_i % n);
@@ -161,7 +161,7 @@ __global__ void set_postition_kernel(
         fp_t* B, ix_size_t processed, ix_size_t start_i, ix_size_t m) {
 
     const ix_size_t thid = blockDim.x * blockIdx.x + threadIdx.x;
-    for (ix_size_t thid_i = thid; thid_i < m; thid_i += CUDACORES) {
+    for (ix_size_t thid_i = thid; thid_i < m; thid_i += gridDim.x * blockDim.x) {
 
         *(B + thid_i) = processed + start_i + thid_i;
 
@@ -185,7 +185,7 @@ __global__ void equal_column_kernel_old(
     __syncthreads();
     
     
-    for (ix_size_t thid_i = thid; thid_i < m * n_star; thid_i += CUDACORES) {
+    for (ix_size_t thid_i = thid; thid_i < m * n_star; thid_i += gridDim.x * blockDim.x) {
       
         ix_size_t key_i = thid_i / n_star;
         ky_size_t feat_i = thid_i % n_star;
@@ -284,7 +284,7 @@ __global__ void model_error_kernel(
     // safe division for columns
     const ix_size_t thid = blockDim.x * blockIdx.x + threadIdx.x;
     
-    for (ix_size_t thid_i = thid; thid_i < m; thid_i += CUDACORES) {
+    for (ix_size_t thid_i = thid; thid_i < m; thid_i += gridDim.x * blockDim.x) {
         
         fp_t loc_acc_err = 0;
        

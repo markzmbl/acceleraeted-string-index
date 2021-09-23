@@ -163,7 +163,6 @@ inline Status calculate_group(
     // check feature length threshold
     if (n > feat_thresh && !force) {
         assert(cudaFreeHost(host_uneqs) == cudaSuccess);
-        printf("group start: %u with m: %u exceeds feature length with: %u\n", start_i, m, n);
         return threshold_exceed;
     }
 
@@ -471,7 +470,6 @@ inline Status calculate_group(
 
     // check model threshold
     if (abs(avg_error) > error_thresh && !force) {
-        printf("group start: %u with m: %u exceeds average error with: %f\n", start_i, m, avg_error);
         assert(B.free() == true);
         assert(dev_feat_indices.free() == true); 
         return threshold_exceed;
@@ -583,8 +581,9 @@ inline void grouping(
             group_t group;
             Status result = success;
 
+            unsigned int fsteps = 0;
             // increase loop
-            while (result == success || result == out_of_memory) {
+            while (end_i + fstep < batchlen && result == success) {
 
                 end_i += fstep;
 
@@ -598,14 +597,12 @@ inline void grouping(
                     &cusolverH, &cusolverP, &cublasH, false);
 
 
-                if (result == out_of_memory) {
-                    ++step;
-                }
+                assert(result != out_of_memory);
 
-
+                ++fsteps;
             }
-
-            while (result == threshold_exceed || result == out_of_memory) {
+            unsigned int bsteps = 0;
+            while (end_i + fstep < batchlen && result == threshold_exceed) {
 
                 ix_size_t step = 1;
 
@@ -618,20 +615,16 @@ inline void grouping(
                     processed, start_i, end_i - start_i, pt, et, step,
                     &cusolverH, &cusolverP, &cublasH, false);
 
-                if (result == out_of_memory) {
-                    ++step;
-                }
-            }    
-            printf(
-                "[GROUP]\t%lu\n"
-                "\tstart:\t%lu\n"
-                "\tm:\t%lu\n"
-                "\tn:\t%u\n"
-                "\tavg:\t%f\n"
-                "\tmin:\t%f\n"
-                "\tmax:\t%f\n",
-                groups.size(), group.start, group.m, group.n, group.avg_err, group.min_err,group.max_err
-            );
+                assert(result != out_of_memory);
+
+                ++bsteps;
+            }
+            group.fsteps = fsteps;
+            group.bsteps = bsteps;
+
+            if (verbose) {
+                print_group(groups.size(), group);
+            }
             groups.push_back(group);
 
             start_i = end_i;
@@ -644,16 +637,11 @@ inline void grouping(
         dev_keys, dev_pair_lens, &group,
         processed, start_i, NUMKEYS - processed - start_i, pt, et, step,
         &cusolverH, &cusolverP, &cublasH, true);
-    printf(
-        "[GROUP]\t%lu\n"
-        "\tstart:\t%lu\n"
-        "\nm:\t%lu"
-        "\nn:\t%u"
-        "\navg:\t%d"
-        "\nmin:\t%d"
-        "\nmax:\t%d\n",
-        groups.size(), group.start, group.m, group.n, group.avg_err, group.min_err,group.max_err
-    );
+    group.fsteps = 1;
+    group.bsteps = 0;
+    if (verbose) {
+        print_group(groups.size(), group);
+    }
     groups.push_back(group);
 
     assert(cudaFree(dev_keys) == cudaSuccess);

@@ -10,6 +10,57 @@ inline uint64_t safe_division(uint64_t divident, uint64_t divisor) {
     return (uint64_t) (divident + divisor - 1) / divisor;
 }
 
+inline cudaDeviceProp get_device_prop() {
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, 0);
+    return prop;
+}
+
+int getSPcores(cudaDeviceProp devProp)
+{  
+    int cores = 0;
+    int mp = devProp.multiProcessorCount;
+    switch (devProp.major){
+     case 2: // Fermi
+      if (devProp.minor == 1) cores = mp * 48;
+      else cores = mp * 32;
+      break;
+     case 3: // Kepler
+      cores = mp * 192;
+      break;
+     case 5: // Maxwell
+      cores = mp * 128;
+      break;
+     case 6: // Pascal
+      if ((devProp.minor == 1) || (devProp.minor == 2)) cores = mp * 128;
+      else if (devProp.minor == 0) cores = mp * 64;
+      else printf("Unknown device type\n");
+      break;
+     case 7: // Volta and Turing
+      if ((devProp.minor == 0) || (devProp.minor == 5)) cores = mp * 64;
+      else printf("Unknown device type\n");
+      break;
+     case 8: // Ampere
+      if (devProp.minor == 0) cores = mp * 64;
+      else if (devProp.minor == 6) cores = mp * 128;
+      else printf("Unknown device type\n");
+      break;
+     default:
+      printf("Unknown device type\n"); 
+      break;
+      }
+    return cores;
+}
+
+int get_block_size(cudaDeviceProp prop, int cudacores) {
+    int blocksize = prop.maxThreadsPerBlock;
+    // todo assert blocksizes power of two
+    while (cudacores % blocksize != 0) {
+        blocksize /= 2;
+    }
+    return blocksize;
+}
+
 
 // return enum
 enum Status {success, threshold_exceed, out_of_memory, batch_end_reached};
@@ -58,15 +109,21 @@ struct group_t {
     fp_t avg_err;
     fp_t min_err;
     fp_t max_err;
+    unsigned int fsteps;
+    unsigned int bsteps;
 };
 
+
 // gpu
-const ix_size_t CUDACORES = 768;//1664;
-const ix_size_t BLOCKSIZE = 1<<7;
+
+cudaDeviceProp prop = get_device_prop();
+const ix_size_t CUDACORES = getSPcores(prop);
+const ix_size_t BLOCKSIZE = get_block_size(prop, CUDACORES);
 const ix_size_t BLOCKNUM = (ix_size_t) (CUDACORES / BLOCKSIZE);
 //const ix_size_t VRAM = 4.2331E+9; // whole capacity
-const ix_size_t VRAM = 2.0919E+9 - 1.074E+9;// 4.2331E+9 - 1.074E+9; // 1 GiB reserved for graphics output
-const ix_size_t BATCHLEN = safe_division(VRAM * 0.5, KEYSIZE);
+const ix_size_t VRAM = prop.totalGlobalMem;
+const float LOADFACTOR = 0.05;
+const ix_size_t BATCHLEN = safe_division(VRAM * LOADFACTOR, KEYSIZE);
 
 const char FILENAME[] = "./gene/gene200.txt";
 
