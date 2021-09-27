@@ -67,7 +67,7 @@ enum Status {success, threshold_exceed, out_of_memory, batch_end_reached};
 
 // debug flag
 bool verbose = true;
-const bool debug = true;
+const bool debug = false;
 const bool sanity_check = false;
 
 // gpu specific types
@@ -77,7 +77,7 @@ cudaDataType cuda_float = CUDA_R_64F;
 const fp_t float_max = DBL_MAX;
 const fp_t float_min = -float_max;
 const fp_t float_eps = DBL_EPSILON;
-const fp_t eps = 0.05;
+const fp_t eps = 0.1;
 int_t int_max = UINT32_MAX;
 #define SINGLE false
 
@@ -122,7 +122,7 @@ const ix_size_t BLOCKSIZE = get_block_size(prop, CUDACORES);
 const ix_size_t BLOCKNUM = (ix_size_t) (CUDACORES / BLOCKSIZE);
 //const ix_size_t VRAM = 4.2331E+9; // whole capacity
 const ix_size_t VRAM = prop.totalGlobalMem;
-const float LOADFACTOR = 0.05;
+const float LOADFACTOR = 0.005;
 const ix_size_t BATCHLEN = safe_division(VRAM * LOADFACTOR, KEYSIZE);
 
 const char FILENAME[] = "./gene/gene200.txt";

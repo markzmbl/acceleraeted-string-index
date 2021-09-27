@@ -162,6 +162,7 @@ inline Status calculate_group(
 
     // check feature length threshold
     if (n > feat_thresh && !force) {
+        if (debug) printf("%u\texcess of feature length.\n", n);
         assert(cudaFreeHost(host_uneqs) == cudaSuccess);
         return threshold_exceed;
     }
@@ -470,6 +471,7 @@ inline Status calculate_group(
 
     // check model threshold
     if (abs(avg_error) > error_thresh && !force) {
+        if (debug) printf("%f\texcess of average error.\n", avg_error);
         assert(B.free() == true);
         assert(dev_feat_indices.free() == true); 
         return threshold_exceed;
@@ -522,6 +524,12 @@ inline void grouping(
     ix_size_t end_i = 0;
 
     // declare gpu variables
+
+    cudaStream_t stream0;
+    cudaStream_t stream1;
+    cudaStreamCreate(&stream0);
+    cudaStreamCreate(&stream1);
+
     ky_t* dev_keys;
     ky_size_t* dev_pair_lens;
     assert(cudaMalloc(&dev_keys, BATCHLEN * KEYSIZE) == cudaSuccess);
@@ -532,21 +540,18 @@ inline void grouping(
 
     // while keys are left
     while (processed + end_i + fstep < NUMKEYS) {
-        
-        // count processed keys
-        processed += start_i;
 
         ix_size_t batchlen = (NUMKEYS - processed < BATCHLEN) ? NUMKEYS - processed : BATCHLEN;
-        assert(cudaMemcpy(dev_keys, keys + start_i, batchlen * KEYSIZE, cudaMemcpyHostToDevice) == cudaSuccess); 
+        assert(cudaMemcpy(dev_keys, keys + processed, batchlen * KEYSIZE, cudaMemcpyHostToDevice) == cudaSuccess); 
+
+        //print_kernel<<<1, 100>>>(dev_keys, 100);
+        //cudaDeviceSynchronize();
 
         //printf("%u\n", sizeof(ky_t));
         //printf("%c, %c\n", *(((ch_t*)*keys) + 13), *(((ch_t*)*(keys + 1)) + 13));
         //print_kernel<<<1, 16>>>(dev_keys, 16);
         //cudaDeviceSynchronize();
 
-        // reset end_i and start_i
-        end_i -= start_i;
-        start_i = 0;
 
         // calculate common prefix lenghts
         pair_prefix_kernel
@@ -560,11 +565,16 @@ inline void grouping(
             for (ix_size_t key_i = 0; key_i < (BATCHLEN - 1); ++key_i) {
                 ky_size_t char_i;
                 for (char_i = 0; char_i < KEYSIZE; ++char_i) {
-                    if (*(((ch_t*) (keys + processed + key_i)) + char_i) != *(((ch_t*) (keys + processed + key_i + 1)) + char_i)) {
+                    if (*(((ch_t*) *(keys + processed + key_i)) + char_i) != *(((ch_t*) *(keys + processed + key_i + 1)) + char_i)) {
                         break;
                     }
                 }
                 assert(char_i == *(hst_pair_lens + key_i));
+                //if (key_i >= 3061350) {
+                //    printf("key_1: %u, pairlen: %u\n", key_i, char_i);
+                //    print_key(keys + key_i);
+                //    print_key(keys + key_i + 1);
+                //}
             }
             //cudaFreeHost(hst_pair_lens);
         }
@@ -619,16 +629,27 @@ inline void grouping(
 
                 ++bsteps;
             }
-            group.fsteps = fsteps;
-            group.bsteps = bsteps;
 
-            if (verbose) {
-                print_group(groups.size(), group);
+            if (end_i + fstep < batchlen) {
+                group.fsteps = fsteps;
+                group.bsteps = bsteps;
+
+                if (verbose) {
+                    print_group(groups.size(), group);
+                }
+                groups.push_back(group);
+
+                start_i = end_i;
             }
-            groups.push_back(group);
-
-            start_i = end_i;
         }
+
+        // end of batch
+        processed += start_i;
+        end_i -= start_i;
+        start_i = 0;
+
+        // 
+
     }
     // last group
     group_t group;

@@ -14,7 +14,25 @@
 __global__ void print_kernel(const ky_t* array, ix_size_t len) {
     const ix_size_t thid = blockDim.x * blockIdx.x + threadIdx.x;
     if (thid < len)
-        printf("%u: %c\n", (uint16_t) thid, (uint8_t)*(((ch_t*)*(array + 1) + thid)));
+        printf("%u: %c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c\n",(uint16_t) thid,
+            *(*(array + thid)),
+            *(*(array + thid) + 1),
+            *(*(array + thid) + 2),
+            *(*(array + thid) + 3),
+            *(*(array + thid) + 4),
+            *(*(array + thid) + 5),
+            *(*(array + thid) + 6),
+            *(*(array + thid) + 7),
+            *(*(array + thid) + 8),
+            *(*(array + thid) + 9),
+            *(*(array + thid) + 10),
+            *(*(array + thid) + 11),
+            *(*(array + thid) + 12),
+            *(*(array + thid) + 13),
+            *(*(array + thid) + 14),
+            *(*(array + thid) + 15)
+
+        );
 }
 
 __global__ void pair_prefix_kernel(
