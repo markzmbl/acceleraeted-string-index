@@ -2,6 +2,8 @@
 #include "globals.h"
 
 #include <vector>
+#include <algorithm>
+#include <string>
 
 
 #ifndef _HELPERS_
@@ -15,6 +17,10 @@ void read_keys(ky_t* keys, const std::string filename) {
     for (ix_size_t key_i = 0; key_i < NUMKEYS; ++key_i) {
         std::getline(data, line);
         line = line.substr(0, KEYLEN);
+        //std::replace(line.begin(), line.end(), 'A', '!');
+        //std::replace(line.begin(), line.end(), 'B', '@');
+        //std::replace(line.begin(), line.end(), 'C', '_');
+        //std::replace(line.begin(), line.end(), 'D', '~');
         memcpy(keys + key_i, line.c_str(), KEYLEN);
     }
 
@@ -50,6 +56,12 @@ inline void print_key(const ky_t* key) {
         printf("%c", (char) char0);
     }
     printf("\n");
+}
+
+inline void print_keys(const ky_t* keys, size_t start, size_t len) {
+    for (size_t key_i = start; key_i < start + len; ++key_i) {
+        print_key(keys + key_i);
+    }
 }
 
 inline bool nearly_equal(fp_t a, fp_t b) {

@@ -65,7 +65,7 @@ __global__ void pair_prefix_kernel(
 
 
 __global__ void rmq_kernel(
-        const ky_size_t* dev_pair_lens, const ix_size_t start_i, const ix_size_t m,
+        const ky_size_t* dev_pair_lens, const ix_size_t start_i, const ix_size_t range,
         int_t* dev_min_len, int_t* dev_max_len) {
     
     dev_pair_lens += start_i;
@@ -79,7 +79,7 @@ __global__ void rmq_kernel(
     __syncthreads();
 
     // iterate batch in strides
-    for (ix_size_t thid_i = thid; thid_i < m; thid_i += gridDim.x * blockDim.x) {
+    for (ix_size_t thid_i = thid; thid_i < range; thid_i += gridDim.x * blockDim.x) {
 
         loc_min_len = *(dev_pair_lens + thid_i);
         loc_max_len = *(dev_pair_lens + thid_i);
@@ -90,7 +90,7 @@ __global__ void rmq_kernel(
             ky_size_t tmp_min_len = __shfl_down_sync(0xFFFFFFFF, loc_min_len, offset);
             ky_size_t tmp_max_len = __shfl_down_sync(0xFFFFFFFF, loc_max_len, offset);
 
-            if (threadIdx.x % (offset * 2) == 0 && thid_i + offset < m && threadIdx.x % 32 + offset < 32) {
+            if (threadIdx.x % (offset * 2) == 0 && thid_i + offset < range && threadIdx.x % 32 + offset < 32) {
                 
                 // min
                 if (tmp_min_len < loc_min_len) {
@@ -122,7 +122,7 @@ __global__ void rmq_kernel(
         // reduce each block to a single value
         for (ix_size_t offset = 32; offset < blockDim.x; offset *= 2) {
             __syncthreads();
-            if (threadIdx.x % (offset * 2) == 0 && thid_i + offset < m && threadIdx.x + offset < blockDim.x) {
+            if (threadIdx.x % (offset * 2) == 0 && thid_i + offset < range && threadIdx.x + offset < blockDim.x) {
 
                 shrd_mmry_j = (threadIdx.x + offset) / 32;
 

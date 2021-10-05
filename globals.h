@@ -77,7 +77,7 @@ cudaDataType cuda_float = CUDA_R_64F;
 const fp_t float_max = DBL_MAX;
 const fp_t float_min = -float_max;
 const fp_t float_eps = DBL_EPSILON;
-const fp_t eps = 0.1;
+const fp_t eps = 0.2;
 int_t int_max = UINT32_MAX;
 #define SINGLE false
 
@@ -101,6 +101,7 @@ typedef uint8_t vl_t;
 
 // group type
 struct group_t {
+    ky_t pivot;
     ix_size_t start;
     ix_size_t m;
     ky_size_t n;
@@ -122,7 +123,7 @@ const ix_size_t BLOCKSIZE = get_block_size(prop, CUDACORES);
 const ix_size_t BLOCKNUM = (ix_size_t) (CUDACORES / BLOCKSIZE);
 //const ix_size_t VRAM = 4.2331E+9; // whole capacity
 const ix_size_t VRAM = prop.totalGlobalMem;
-const float LOADFACTOR = 0.005;
+const float LOADFACTOR = 0.6;
 const ix_size_t BATCHLEN = safe_division(VRAM * LOADFACTOR, KEYSIZE);
 
 const char FILENAME[] = "./gene/gene200.txt";

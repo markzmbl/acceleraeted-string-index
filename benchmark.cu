@@ -15,7 +15,8 @@
 #include <limits>
 
 
-
+#include "helpers.h"
+#include <chrono>
 
 
 
@@ -33,16 +34,31 @@ int main() {
     read_keys(keys, FILENAME);
     
     // parameters
-    const ix_size_t et = 200;
+    const ix_size_t et = 128;
     const ix_size_t pt = 16;
-    const ix_size_t fstep = 5000;
+    const ix_size_t fstep = 550;
     const ix_size_t bstep = 50;
+    const ix_size_t min_size = 400;
 
+    std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
     // group meta data   
     std::vector<group_t> groups;
+    grouping(keys, NUMKEYS, et, pt, fstep, bstep, min_size, groups);
+    ix_size_t group_n = groups.size();
+    ky_t* pivots = (ky_t*) malloc(group_n * sizeof(ky_t));
+    for (ix_size_t group_i = 0; group_i < group_n; ++group_i) {
+        strncpy(*(pivots + group_i), groups.at(group_i).pivot, sizeof(ky_t));
+    } 
+    print_keys(pivots, 0, 2);
+    std::vector<group_t> root;
+    root.reserve(group_n);
+    grouping(pivots, group_n, et, pt, fstep, bstep, min_size, root);
+    free(pivots);
+    std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
+    std::cout << "Time difference = " << std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count() << "[µs]" << std::endl;
 
 
-    grouping(keys, et, pt, fstep, bstep, groups);
+    
 
     return 0;
 }

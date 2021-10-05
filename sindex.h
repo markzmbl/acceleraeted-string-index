@@ -22,6 +22,8 @@ inline Status calculate_group(
     cublasHandle_t* cublasH,
     bool force) {
         
+    cudaError_t cudaStat = cudaSuccess;
+
     //cpu
     cudaError_t cuda_stat = cudaSuccess;
     std::vector<GPUVar*> requests;
@@ -30,6 +32,7 @@ inline Status calculate_group(
     int_t* host_uneqs;
     ky_size_t n_star = 0;
     ky_size_t n = 0;
+    ky_size_t n_tilde = 0;
     ky_size_t* host_feat_indices;
     int host_info = 0;
     uint64_t d_work_size = 0;
@@ -80,7 +83,7 @@ inline Status calculate_group(
     // --- range query
     rmq_kernel
         <<<get_block_num(m), BLOCKSIZE, BLOCKSIZE / 32 * 2 * sizeof(ky_size_t)>>>
-        (pair_lens, start_i, m, dev_min_len.ptr(), dev_max_len.ptr());
+        (pair_lens, start_i, m - 1, dev_min_len.ptr(), dev_max_len.ptr());
     assert(cudaPeekAtLastError() == cudaSuccess);
 
 
@@ -90,8 +93,36 @@ inline Status calculate_group(
 
     // rmq sanity check
     if (sanity_check) {
-        assert(*std::min_element(hst_pair_lens + start_i, hst_pair_lens + start_i + m) == host_min_len);
-        assert(*std::max_element(hst_pair_lens + start_i, hst_pair_lens + start_i + m) == host_max_len);
+        ky_size_t san_min_len = *std::min_element(hst_pair_lens + start_i, hst_pair_lens + start_i + m - 1);
+        if (san_min_len != host_min_len) {
+            printf(
+                "[SANITY]\tMin Len\n"
+                "\tstart:\t%u\n"
+                "\tm:\t%u\n"
+                "\tsanity:\t%u\n"
+                "\tgpu:\t%u\n",
+                start_i,
+                m,
+                san_min_len,
+                host_min_len
+            );
+            exit(1);
+        }
+        ky_size_t san_max_len = *std::max_element(hst_pair_lens + start_i, hst_pair_lens + start_i + m - 1);
+        if (san_max_len != host_max_len) {
+            printf(
+                "[SANITY]\tMax Len\n"
+                "\tstart:\t%u\n"
+                "\tm:\t%u\n"
+                "\tsanity:\t%u\n"
+                "\tgpu:\t%u\n",
+                start_i,
+                m,
+                san_max_len,
+                host_max_len
+            );
+            exit(1);
+        }
     }
 
     // free lens
@@ -115,7 +146,7 @@ inline Status calculate_group(
 
     // cpu allocation
     assert(cudaMallocHost(&host_uneqs, dev_uneqs.size()) == cudaSuccess);
-
+    
     // -- determine if columns are unequal
     assert(cudaMemset(dev_uneqs.ptr(), 0, dev_uneqs.size()) == cudaSuccess);
     assert(cudaMemset(col_vals.ptr(),  0, col_vals.size())  == cudaSuccess);
@@ -167,6 +198,9 @@ inline Status calculate_group(
         return threshold_exceed;
     }
 
+    // take bias into account
+    n_tilde = n + 1;
+
     // set correct count
     A.count                = m * n;
     dev_feat_indices.count = n;
@@ -200,7 +234,15 @@ inline Status calculate_group(
     column_major_kernel
         <<<get_block_num(m * n), BLOCKSIZE>>>
         (dev_keys, A.ptr(), start_i, m, dev_feat_indices.ptr(), n);
-    assert(cudaGetLastError() == cudaSuccess);
+    cudaStat = cudaGetLastError();
+    if(cudaStat != cudaSuccess) {
+        printf(
+            "[ASSERTION]\tAfter Colum Major Kernel\n"
+            "\tcudaError:\t%s\n",
+            cudaGetErrorString(cudaStat)
+        );
+        exit(1);
+    }
     
     if (sanity_check) {
         cudaMallocHost(&hst_A, A.size());
@@ -231,7 +273,7 @@ inline Status calculate_group(
 //        cudaFreeHost(debug_A);
 //    }
 
-    assert(cudaGetLastError() == cudaSuccess);
+
 
 
 
@@ -327,7 +369,14 @@ inline Status calculate_group(
     assert(CUSOLVER_STATUS_SUCCESS == cusolver_status);
     // check result
     assert(cudaMemcpy(&host_info, dev_info.ptr(), dev_info.size(), cudaMemcpyDeviceToHost) == cudaSuccess);
-    assert(host_info == 0);
+    if (host_info != 0) {
+        printf(
+            "[ASSERTION]\tAfter QR Factorization\n"
+            "\thost_info == %i\n",
+            host_info
+        );
+        exit(1);
+    }
     
     // **** compute Q^T*B ****
     #if SINGLE
@@ -354,7 +403,18 @@ inline Status calculate_group(
     }
 
     assert(cudaMemcpy(&host_info, dev_info.ptr(), dev_info.size(), cudaMemcpyDeviceToHost) == cudaSuccess);
-    assert(host_info == 0);
+    if (host_info != 0) {
+        printf(
+            "[ASSERTION]\tAfter Q Multiplication\n"
+            "\thost_info == %i\n"
+            "\tm:\t%u\n"
+            "\tn\t%u",
+            host_info,
+            m,
+            n
+        );
+        exit(1);
+    }
     assert(cudaDeviceSynchronize() == cudaSuccess);
     assert(cublas_status == CUBLAS_STATUS_SUCCESS);
 
@@ -380,7 +440,27 @@ inline Status calculate_group(
         cudaMemcpy(hst_B, B.ptr(), n * sizeof(fp_t), cudaMemcpyDeviceToHost);
         for (ix_size_t feat_i = 0; feat_i < n; ++feat_i) {
             // nan check
-            assert((*(hst_B + feat_i) != *(hst_B + feat_i)) == false);
+
+            if ((*(hst_B + feat_i) != *(hst_B + feat_i)) != false) {
+                printf(
+                    "[SANITY]\tNan Model\n"
+                    "\tstart:\t%u\n"
+                    "\tm:\t%u\n"
+                    "\tn:\t%u\n"
+                    "\tmodel:\t",
+                    start_i,
+                    m,
+                    n
+                );
+                for (ky_size_t feat_j = 0; feat_j < n; ++feat_j) {
+                    printf("%f", *(hst_B + feat_i));
+                    if (feat_j <= n - 1) {
+                        printf(", ");
+                    }
+                }
+                printf("\n");
+                exit(1);
+            }
         }
     }
 
@@ -471,8 +551,22 @@ inline Status calculate_group(
 
     // check model threshold
     if (abs(avg_error) > error_thresh && !force) {
-        if (debug) printf("%f\texcess of average error.\n", avg_error);
+
+        if (debug) {
+            printf(
+                "[DEBUG]\tError Threshold Excess\n"
+                "\tstart:\t%u\n"
+                "\tm:\t%u\n"
+                "\terr:\t%f\n"
+                "\tn:\t%u\n",
+                start_i,
+                m,
+                avg_error,
+                n
+            );
+        }
         assert(B.free() == true);
+        assert(cudaFreeHost(host_feat_indices) == cudaSuccess);
         assert(dev_feat_indices.free() == true); 
         return threshold_exceed;
     }
@@ -487,6 +581,7 @@ inline Status calculate_group(
 
     // fill in group
     group->start        = processed + start_i;
+    strncpy(group->pivot, *(hst_keys + group->start), sizeof(ky_t));
     group->m            = m;
     group->n            = n;
     group->feat_indices = host_feat_indices;
@@ -504,9 +599,9 @@ inline Status calculate_group(
 
 
 inline void grouping(
-    const ky_t* keys,
+    const ky_t* keys, ix_size_t num_keys,
     fp_t et, ky_size_t pt,
-    ix_size_t fstep, ix_size_t bstep,
+    ix_size_t fstep, ix_size_t bstep, ix_size_t min_size,
     std::vector<group_t> &groups) {
 
 
@@ -539,10 +634,27 @@ inline void grouping(
     ky_size_t* hst_pair_lens;
 
     // while keys are left
-    while (processed + end_i + fstep < NUMKEYS) {
 
-        ix_size_t batchlen = (NUMKEYS - processed < BATCHLEN) ? NUMKEYS - processed : BATCHLEN;
-        assert(cudaMemcpy(dev_keys, keys + processed, batchlen * KEYSIZE, cudaMemcpyHostToDevice) == cudaSuccess); 
+    //start_i = 389'078;
+    //end_i = 389'479;
+
+    ix_size_t batchlen = (num_keys - processed < BATCHLEN) ? num_keys - processed : BATCHLEN;
+    assert(cudaMemcpy(dev_keys, keys + processed, batchlen * KEYSIZE, cudaMemcpyHostToDevice) == cudaSuccess); 
+    // calculate common prefix lenghts
+    pair_prefix_kernel
+        <<<get_block_num(batchlen - 1), BLOCKSIZE>>>(dev_keys, dev_pair_lens, batchlen);
+    assert(cudaGetLastError() == cudaSuccess);
+
+    while (processed + end_i + fstep < num_keys) {
+
+        if (processed > 0) {
+            batchlen = (num_keys - processed < BATCHLEN) ? num_keys - processed : BATCHLEN;
+            assert(cudaMemcpy(dev_keys, keys + processed, batchlen * KEYSIZE, cudaMemcpyHostToDevice) == cudaSuccess);
+            // calculate common prefix lenghts
+            pair_prefix_kernel
+                <<<get_block_num(batchlen - 1), BLOCKSIZE>>>(dev_keys, dev_pair_lens, batchlen);
+            assert(cudaGetLastError() == cudaSuccess);
+        }
 
         //print_kernel<<<1, 100>>>(dev_keys, 100);
         //cudaDeviceSynchronize();
@@ -553,16 +665,12 @@ inline void grouping(
         //cudaDeviceSynchronize();
 
 
-        // calculate common prefix lenghts
-        pair_prefix_kernel
-            <<<get_block_num(batchlen - 1), BLOCKSIZE>>>(dev_keys, dev_pair_lens, batchlen);
-        assert(cudaGetLastError() == cudaSuccess);
         
         // pair length sanity check
         if (sanity_check) {
-            cudaMallocHost(&hst_pair_lens, (BATCHLEN - 1) * sizeof(ky_size_t));
-            cudaMemcpy(hst_pair_lens, dev_pair_lens, (BATCHLEN - 1) * sizeof(ky_size_t), cudaMemcpyDeviceToHost);
-            for (ix_size_t key_i = 0; key_i < (BATCHLEN - 1); ++key_i) {
+            cudaMallocHost(&hst_pair_lens, (batchlen - 1) * sizeof(ky_size_t));
+            cudaMemcpy(hst_pair_lens, dev_pair_lens, (batchlen - 1) * sizeof(ky_size_t), cudaMemcpyDeviceToHost);
+            for (ix_size_t key_i = 0; key_i < (batchlen - 1); ++key_i) {
                 ky_size_t char_i;
                 for (char_i = 0; char_i < KEYSIZE; ++char_i) {
                     if (*(((ch_t*) *(keys + processed + key_i)) + char_i) != *(((ch_t*) *(keys + processed + key_i + 1)) + char_i)) {
@@ -579,10 +687,12 @@ inline void grouping(
             //cudaFreeHost(hst_pair_lens);
         }
 
+
+        //print_keys(keys, 389'078, 401);
         //group_t group0;
         //auto result0 = calculate_group(keys, hst_pair_lens,
         //    dev_keys, dev_pair_lens, &group0,
-        //    0, 5873400, 540000, pt, et, 1,
+        //    0, 2735155, 14, pt, et, 1,
         //    &cusolverH, &cusolverP, &cublasH, false);
 
         // while batch is sufficent
@@ -594,6 +704,13 @@ inline void grouping(
             unsigned int fsteps = 0;
             // increase loop
             while (end_i + fstep < batchlen && result == success) {
+
+                // free feature indices and model values
+                // as group is still expanding
+                if (fsteps > 0) {
+                    assert(cudaFreeHost(group.feat_indices)  == cudaSuccess);
+                    assert(cudaFreeHost(group.model)         == cudaSuccess);
+                }
 
                 end_i += fstep;
 
@@ -610,6 +727,7 @@ inline void grouping(
                 assert(result != out_of_memory);
 
                 ++fsteps;
+
             }
             unsigned int bsteps = 0;
             while (end_i + fstep < batchlen && result == threshold_exceed) {
@@ -618,16 +736,25 @@ inline void grouping(
 
                 end_i -= bstep;
 
-                assert(end_i > start_i);
-
+                // too gready -> not working
+                //assert(end_i > start_i);
+                bool force = false;
+                if (end_i - start_i < min_size) {
+                    end_i = start_i + min_size;
+                    force = true;
+                }
                 result = calculate_group(keys, hst_pair_lens,
                     dev_keys, dev_pair_lens, &group,
                     processed, start_i, end_i - start_i, pt, et, step,
-                    &cusolverH, &cusolverP, &cublasH, false);
+                    &cusolverH, &cusolverP, &cublasH, force);
 
                 assert(result != out_of_memory);
 
                 ++bsteps;
+
+                if (force) {
+                    break;
+                }
             }
 
             if (end_i + fstep < batchlen) {
@@ -656,7 +783,7 @@ inline void grouping(
     ix_size_t step = 1;
     Status result = calculate_group(keys, hst_pair_lens,
         dev_keys, dev_pair_lens, &group,
-        processed, start_i, NUMKEYS - processed - start_i, pt, et, step,
+        processed, start_i, num_keys - processed - start_i, pt, et, step,
         &cusolverH, &cusolverP, &cublasH, true);
     group.fsteps = 1;
     group.bsteps = 0;
