@@ -97,10 +97,10 @@ inline Status calculate_group(
         if (san_min_len != host_min_len) {
             printf(
                 "[SANITY]\tMin Len\n"
-                "\tstart:\t%u\n"
-                "\tm:\t%u\n"
-                "\tsanity:\t%u\n"
-                "\tgpu:\t%u\n",
+                "\tstart:\t%'d\n"
+                "\tm:\t%'d\n"
+                "\tsanity:\t%'d\n"
+                "\tgpu:\t%'d\n",
                 start_i,
                 m,
                 san_min_len,
@@ -112,10 +112,10 @@ inline Status calculate_group(
         if (san_max_len != host_max_len) {
             printf(
                 "[SANITY]\tMax Len\n"
-                "\tstart:\t%u\n"
-                "\tm:\t%u\n"
-                "\tsanity:\t%u\n"
-                "\tgpu:\t%u\n",
+                "\tstart:\t%'d\n"
+                "\tm:\t%'d\n"
+                "\tsanity:\t%'d\n"
+                "\tgpu:\t%'d\n",
                 start_i,
                 m,
                 san_max_len,
@@ -193,7 +193,17 @@ inline Status calculate_group(
 
     // check feature length threshold
     if (n > feat_thresh && !force) {
-        if (debug) printf("%u\texcess of feature length.\n", n);
+        if (debug) {
+            printf(
+                "[DEBUG]\tFeature Length Excess\n"
+                "\tstart:\t%'d\n"
+                "\tm:\t%'d\n"
+                "\tn:\t%'d\n",
+                start_i,
+                m,
+                n
+            );
+        }
         assert(cudaFreeHost(host_uneqs) == cudaSuccess);
         return threshold_exceed;
     }
@@ -202,7 +212,7 @@ inline Status calculate_group(
     n_tilde = n + 1;
 
     // set correct count
-    A.count                = m * n;
+    A.count                = m * n_tilde;
     dev_feat_indices.count = n;
 
     // allocation
@@ -233,7 +243,7 @@ inline Status calculate_group(
     // --- write in column major format
     column_major_kernel
         <<<get_block_num(m * n), BLOCKSIZE>>>
-        (dev_keys, A.ptr(), start_i, m, dev_feat_indices.ptr(), n);
+        (dev_keys, A.ptr(), start_i, m, dev_feat_indices.ptr(), n_tilde);
     cudaStat = cudaGetLastError();
     if(cudaStat != cudaSuccess) {
         printf(
@@ -249,37 +259,26 @@ inline Status calculate_group(
         cudaMemcpy(hst_A, A.ptr(), A.size(), cudaMemcpyDeviceToHost);
         for (ix_size_t key_i = 0; key_i < m; ++key_i) {
             const ky_t* key0 = hst_keys + processed + start_i + key_i;
-            for (ky_size_t feat_i = 0; feat_i < n; ++feat_i) {
-                ky_size_t char_i = *(host_feat_indices + feat_i);
-                fp_t feat0 = (fp_t) *(((ch_t*) *key0) + char_i);
+            for (ky_size_t feat_i = 0; feat_i < n_tilde; ++feat_i) {
                 fp_t feat1 = *(hst_A + feat_i * m + key_i);
+                fp_t feat0;
+                if (feat_i < n_tilde - 1) {
+                    ky_size_t char_i = *(host_feat_indices + feat_i);
+                    feat0 = (fp_t) *(((ch_t*) *key0) + char_i);
+                } else {
+                    feat0 = bias;
+                }
                 assert(feat0 == feat1);
             }
         }
         cudaFreeHost(hst_A);
     }
 
-//    if (debug == true) {
-//        fp_t* debug_A;
-//        auto err = cudaMallocHost(&debug_A, A.size());
-//        err = cudaMemcpy(debug_A, A.ptr(), A.size(), cudaMemcpyDeviceToHost);
-//        for (int i = 0; i < m * n ; ++i) {
-//            fp_t elem = *(debug_A + i);
-//            if (elem == 0.0) {
-//                printf("column major failed\n");
-//            }
-//            assert(elem != 0);
-//        }
-//        cudaFreeHost(debug_A);
-//    }
-
-
-
 
 
     // set correct count
     B.count   = m;
-    tau.count = n;
+    tau.count = n_tilde;
 
     // allocation
     requests.push_back(&B);
@@ -312,7 +311,7 @@ inline Status calculate_group(
     uint64_t d_work_size_qr = 0;
     uint64_t h_work_size_qr = 0;
     cusolver_status = cusolverDnXgeqrf_bufferSize(
-        *cusolverH, *cusolverP, m, n,
+        *cusolverH, *cusolverP, m, n_tilde,
         cuda_float, A.ptr(), m /*lda*/,
         cuda_float, tau.ptr(),
         cuda_float, &d_work_size_qr, &h_work_size_qr
@@ -323,7 +322,7 @@ inline Status calculate_group(
     #if SINGLE
     cusolver_status = cusolverDnSormqr_bufferSize(
         *cusolverH, CUBLAS_SIDE_LEFT, CUBLAS_OP_T,
-        m, 1 /*nrhs*/, n,
+        m, 1 /*nrhs*/, n_tilde,
         A.ptr(), m /*lda*/,
         tau.ptr(), B.ptr(),
         m /*ldb*/, &d_work_size_tm
@@ -331,7 +330,7 @@ inline Status calculate_group(
     #else
     cusolver_status = cusolverDnDormqr_bufferSize(
         *cusolverH, CUBLAS_SIDE_LEFT, CUBLAS_OP_T,
-        m, 1 /*nrhs*/, n,
+        m, 1 /*nrhs*/, n_tilde,
         A.ptr(), m /*lda*/,
         tau.ptr(), B.ptr(),
         m /*ldb*/, &d_work_size_tm
@@ -358,7 +357,7 @@ inline Status calculate_group(
     // **** compute QR factorization ****
     // actual QR factorization
     cusolver_status = cusolverDnXgeqrf(
-        *cusolverH, *cusolverP, m, n,
+        *cusolverH, *cusolverP, m, n_tilde,
         cuda_float, A.ptr(), m /*lda*/,
         cuda_float, tau.ptr(), 
         cuda_float, d_work.ptr(), d_work_size,
@@ -382,14 +381,14 @@ inline Status calculate_group(
     #if SINGLE
     cusolver_status= cusolverDnSormqr(
         *cusolverH, CUBLAS_SIDE_LEFT, CUBLAS_OP_T,
-        m, 1 /*nrhs*/, n,
+        m, 1 /*nrhs*/, n_tilde,
         A.ptr(), m /*lda*/, tau.ptr(), B.ptr(), m /*ldb*/,
         d_work.ptr(), d_work_size, dev_info.ptr()
     );
     #else
     cusolver_status= cusolverDnDormqr(
         *cusolverH, CUBLAS_SIDE_LEFT, CUBLAS_OP_T,
-        m, 1 /*nrhs*/, n,
+        m, 1 /*nrhs*/, n_tilde,
         A.ptr(), m /*lda*/, tau.ptr(), B.ptr(), m /*ldb*/,
         d_work.ptr(), d_work_size, dev_info.ptr()
     );
@@ -407,8 +406,8 @@ inline Status calculate_group(
         printf(
             "[ASSERTION]\tAfter Q Multiplication\n"
             "\thost_info == %i\n"
-            "\tm:\t%u\n"
-            "\tn\t%u",
+            "\tm:\t%'d\n"
+            "\tn\t%'d",
             host_info,
             m,
             n
@@ -424,12 +423,12 @@ inline Status calculate_group(
     #if SINGLE
     cublas_status = cublasStrsm(
         *cublasH, CUBLAS_SIDE_LEFT, CUBLAS_FILL_MODE_UPPER, CUBLAS_OP_N, CUBLAS_DIAG_NON_UNIT,
-        n, 1 /*nrhs*/, &one, A.ptr(), m /*lda*/, B.ptr(), m /*ldb*/
+        n_tilde, 1 /*nrhs*/, &one, A.ptr(), m /*lda*/, B.ptr(), m /*ldb*/
     );
     #else
     cublas_status = cublasDtrsm(
         *cublasH, CUBLAS_SIDE_LEFT, CUBLAS_FILL_MODE_UPPER, CUBLAS_OP_N, CUBLAS_DIAG_NON_UNIT,
-        n, 1 /*nrhs*/, &one, A.ptr(), m /*lda*/, B.ptr(), m /*ldb*/
+        n_tilde, 1 /*nrhs*/, &one, A.ptr(), m /*lda*/, B.ptr(), m /*ldb*/
     );
     #endif
     assert(cudaDeviceSynchronize() == cudaSuccess);
@@ -437,24 +436,24 @@ inline Status calculate_group(
 
     // model sanity check
     if (sanity_check) {
-        cudaMemcpy(hst_B, B.ptr(), n * sizeof(fp_t), cudaMemcpyDeviceToHost);
-        for (ix_size_t feat_i = 0; feat_i < n; ++feat_i) {
+        cudaMemcpy(hst_B, B.ptr(), n_tilde * sizeof(fp_t), cudaMemcpyDeviceToHost);
+        for (ix_size_t feat_i = 0; feat_i < n_tilde; ++feat_i) {
             // nan check
 
             if ((*(hst_B + feat_i) != *(hst_B + feat_i)) != false) {
                 printf(
                     "[SANITY]\tNan Model\n"
-                    "\tstart:\t%u\n"
-                    "\tm:\t%u\n"
-                    "\tn:\t%u\n"
+                    "\tstart:\t%'d\n"
+                    "\tm:\t%'d\n"
+                    "\tn:\t%'d\n"
                     "\tmodel:\t",
                     start_i,
                     m,
                     n
                 );
-                for (ky_size_t feat_j = 0; feat_j < n; ++feat_j) {
+                for (ky_size_t feat_j = 0; feat_j < n_tilde; ++feat_j) {
                     printf("%f", *(hst_B + feat_i));
-                    if (feat_j <= n - 1) {
+                    if (feat_j <= n_tilde - 1) {
                         printf(", ");
                     }
                 }
@@ -484,8 +483,8 @@ inline Status calculate_group(
     assert(cudaMemset(mutex.ptr(),         0,          mutex.size())         == cudaSuccess);
 
     model_error_kernel
-        <<<get_block_num(m * n), BLOCKSIZE, BLOCKSIZE / 32 * 3 * sizeof(fp_t)>>>
-        (dev_keys, processed, start_i, B.ptr(), dev_feat_indices.ptr(), m, n,
+        <<<get_block_num(m), BLOCKSIZE, BLOCKSIZE / 32 * 3 * sizeof(fp_t)>>>
+        (dev_keys, processed, start_i, B.ptr(), dev_feat_indices.ptr(), m, n_tilde,
         dev_acc_error.ptr(), dev_min_error.ptr(), dev_max_error.ptr(), mutex.ptr());
     assert(cudaGetLastError() == cudaSuccess);
     cudaDeviceSynchronize();
@@ -514,11 +513,15 @@ inline Status calculate_group(
 
             fp_t key_err = 0;
             const ky_t* key0 = hst_keys + processed + start_i + key_i;
-            for (ky_size_t feat_i = 0; feat_i < n; ++feat_i) {
-                ky_size_t char_i = *(host_feat_indices + feat_i);
-                fp_t fac0 = (fp_t) *(((ch_t*) *key0) + char_i);
+            for (ky_size_t feat_i = 0; feat_i < n_tilde; ++feat_i) {
                 fp_t fac1 = *(hst_B + feat_i);
-                key_err += fac0 * fac1;
+                if (feat_i < n_tilde - 1) {
+                    ky_size_t char_i = *(host_feat_indices + feat_i);
+                    fp_t fac0 = (fp_t) *(((ch_t*) *key0) + char_i);
+                    key_err += fac0 * fac1;
+                } else {
+                    key_err += fac1;
+                }
             }
             key_err -= (processed + start_i + key_i);
             san_acc_err += key_err;
@@ -555,10 +558,10 @@ inline Status calculate_group(
         if (debug) {
             printf(
                 "[DEBUG]\tError Threshold Excess\n"
-                "\tstart:\t%u\n"
-                "\tm:\t%u\n"
-                "\terr:\t%f\n"
-                "\tn:\t%u\n",
+                "\tstart:\t%'d\n"
+                "\tm:\t%'d\n"
+                "\terr:\t%.10e\n"
+                "\tn:\t%'d\n",
                 start_i,
                 m,
                 avg_error,
@@ -659,7 +662,7 @@ inline void grouping(
         //print_kernel<<<1, 100>>>(dev_keys, 100);
         //cudaDeviceSynchronize();
 
-        //printf("%u\n", sizeof(ky_t));
+        //printf("%'d\n", sizeof(ky_t));
         //printf("%c, %c\n", *(((ch_t*)*keys) + 13), *(((ch_t*)*(keys + 1)) + 13));
         //print_kernel<<<1, 16>>>(dev_keys, 16);
         //cudaDeviceSynchronize();
@@ -679,7 +682,7 @@ inline void grouping(
                 }
                 assert(char_i == *(hst_pair_lens + key_i));
                 //if (key_i >= 3061350) {
-                //    printf("key_1: %u, pairlen: %u\n", key_i, char_i);
+                //    printf("key_1: %'d, pairlen: %'d\n", key_i, char_i);
                 //    print_key(keys + key_i);
                 //    print_key(keys + key_i + 1);
                 //}
@@ -710,6 +713,19 @@ inline void grouping(
                 if (fsteps > 0) {
                     assert(cudaFreeHost(group.feat_indices)  == cudaSuccess);
                     assert(cudaFreeHost(group.model)         == cudaSuccess);
+                    if (debug) {
+                        printf(
+                            "[DEBUG]\tGroup Increase\n"
+                            "\tstart:\t%'d\n"
+                            "\tm:\t%'d\n"
+                            "\terr:\t%.10e\n"
+                            "\tn:\t%'d\n",
+                            start_i,
+                            group.m,
+                            group.avg_err,
+                            group.n
+                        );
+                    }
                 }
 
                 end_i += fstep;
@@ -730,7 +746,7 @@ inline void grouping(
 
             }
             unsigned int bsteps = 0;
-            while (end_i + fstep < batchlen && result == threshold_exceed) {
+            while (end_i > bstep && result == threshold_exceed) {
 
                 ix_size_t step = 1;
 
@@ -739,7 +755,7 @@ inline void grouping(
                 // too gready -> not working
                 //assert(end_i > start_i);
                 bool force = false;
-                if (end_i - start_i < min_size) {
+                if (end_i - start_i <= min_size) {
                     end_i = start_i + min_size;
                     force = true;
                 }

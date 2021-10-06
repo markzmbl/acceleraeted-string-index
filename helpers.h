@@ -29,15 +29,15 @@ void read_keys(ky_t* keys, const std::string filename) {
 
 inline void print_group(int num, group_t group) {
     printf(
-        "[GROUP]\t%lu\n"
-        "\tstart:\t%lu\n"
-        "\tm:\t%lu\n"
-        "\tn:\t%u\n"
-        "\tavg:\t%f\n"
-        "\tmin:\t%f\n"
-        "\tmax:\t%f\n"
-        "\tfsteps:\t%u\n"
-        "\tbsteps:\t%u\n",
+        "[GROUP]\t%'d\n"
+        "\tstart:\t%'d\n"
+        "\tm:\t%'d\n"
+        "\tn:\t%'d\n"
+        "\tavg:\t%.10e\n"
+        "\tmin:\t%.10e\n"
+        "\tmax:\t%.10e\n"
+        "\tfsteps:\t%'d\n"
+        "\tbsteps:\t%'d\n",
         num,
         group.start,
         group.m,
@@ -113,7 +113,7 @@ void printMatrix(int m, int n, const fp_t*A, int lda, const char* name) {
     for(int row = 0 ; row < m ; row++) {
         for(int col = 0 ; col < n ; col++) {
             fp_t Areg = A[row + col*lda];
-            printf("%s(%d,%d) = %f\n", name, row+1, col+1, Areg);
+            printf("%s(%'d,%'d) = %f\n", name, row+1, col+1, Areg);
         }
     }
 }

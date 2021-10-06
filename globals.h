@@ -80,6 +80,8 @@ const fp_t float_eps = DBL_EPSILON;
 const fp_t eps = 0.2;
 int_t int_max = UINT32_MAX;
 #define SINGLE false
+// bias value A
+const fp_t bias = 1;
 
 // index size
 typedef uint64_t ix_size_t;
@@ -96,9 +98,6 @@ const ky_size_t KEYSIZE = KEYLEN * sizeof(ch_t);
 
 // key
 typedef ch_t ky_t[KEYLEN];
-// value
-typedef uint8_t vl_t;
-
 // group type
 struct group_t {
     ky_t pivot;

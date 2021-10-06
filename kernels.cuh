@@ -14,7 +14,7 @@
 __global__ void print_kernel(const ky_t* array, ix_size_t len) {
     const ix_size_t thid = blockDim.x * blockIdx.x + threadIdx.x;
     if (thid < len)
-        printf("%u: %c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c\n",(uint16_t) thid,
+        printf("%'d: %c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c\n",(uint16_t) thid,
             *(*(array + thid)),
             *(*(array + thid) + 1),
             *(*(array + thid) + 2),
@@ -39,7 +39,7 @@ __global__ void pair_prefix_kernel(
         const ky_t* keys, ky_size_t* dev_pair_lens, ix_size_t batch_len) {
     
     const ix_size_t thid = blockDim.x * blockIdx.x + threadIdx.x;
-    //if (!thid) printf("batchlen: %u\n", batch_len);
+    //if (!thid) printf("batchlen: %'d\n", batch_len);
 
     for (ix_size_t thid_i = thid; thid_i < batch_len - 1; thid_i += gridDim.x * blockDim.x) {
         ky_t* key1 = (ky_t*) keys + thid_i;
@@ -52,8 +52,8 @@ __global__ void pair_prefix_kernel(
             if (char1 != char2) {
                 *(dev_pair_lens + thid_i) = char_i;
 //                if (debug == true) {
-//                    //printf("[pair_prefix_kernel] thid_i: %u, key1: %s, key2: %s, prefixlen: %u\n", (uint16_t) thid_i, key1, key2, char_i);
-//                    printf("[pair_prefix_kernel] thid_i: %u, prefixlen: %u\n", (uint16_t) thid_i, char_i);
+//                    //printf("[pair_prefix_kernel] thid_i: %'d, key1: %s, key2: %s, prefixlen: %'d\n", (uint16_t) thid_i, key1, key2, char_i);
+//                    printf("[pair_prefix_kernel] thid_i: %'d, prefixlen: %'d\n", (uint16_t) thid_i, char_i);
 //                }
                 break;
             }
@@ -150,26 +150,31 @@ __global__ void rmq_kernel(
 __global__ void column_major_kernel(
         const ky_t* keys, fp_t* A,
         const ix_size_t start_i, const ix_size_t m,
-        const ky_size_t* feat_indices, const ky_size_t n) {
+        const ky_size_t* feat_indices, const ky_size_t n_tilde) {
 
     const ix_size_t thid = blockDim.x * blockIdx.x + threadIdx.x;
     // move pointer to group start
     keys += start_i;
 
-    for (ix_size_t thid_i = thid; thid_i < m * n; thid_i += gridDim.x * blockDim.x) {
+    for (ix_size_t thid_i = thid; thid_i < m * n_tilde; thid_i += gridDim.x * blockDim.x) {
 
-        ix_size_t key_i =  thid_i / n;
-        ky_size_t feat_i = (thid_i % n);
-        ky_size_t char_i = *(feat_indices + feat_i);
+        ix_size_t key_i =  thid_i / n_tilde;
+        ky_size_t feat_i = (thid_i % n_tilde);
+        ky_size_t char_i;
+
+        if (feat_i < n_tilde - 1) {
+            char_i = *(feat_indices + feat_i);
+            *(A + feat_i * m + key_i) = (fp_t) *(((ch_t*) *(keys + key_i)) + char_i);
+        } else {
+            *(A + feat_i * m + key_i) = bias;
+        }
         
         //if (thid_i < n)
-        //printf("%u\n", char_i);
+        //printf("%'d\n", char_i);
         
-        fp_t elem = (fp_t) *(((ch_t*) *(keys + key_i)) + char_i);
-        *(A + feat_i * m + key_i) = elem;
         //if (*(A + feat_i * m + key_i) == 0.0f)
-        //    printf("%u\n", thid_i);
-        //printf("thid_i: 0, key_i: %u, feat_i: %u, char_i: , char: %c\n",(uint16_t)key_i, (uint8_t)feat_i, (uint8_t)char_i, (uint8_t)*(A + feat_i * m + key_i));
+        //    printf("%'d\n", thid_i);
+        //printf("thid_i: 0, key_i: %'d, feat_i: %'d, char_i: , char: %c\n",(uint16_t)key_i, (uint8_t)feat_i, (uint8_t)char_i, (uint8_t)*(A + feat_i * m + key_i));
         //printf("thid_i: 0, key_i: 0, feat_i: 0, char_i: , char: %c\n",(uint8_t)*(A + feat_i * m + key_i));
 
     }
@@ -194,7 +199,7 @@ __global__ void equal_column_kernel_old(
     // move pointer to group start
     keys += start_i;
     const ix_size_t thid = blockDim.x * blockIdx.x + threadIdx.x;
-    //printf("thid: %u\n", (uint16_t)thid);
+    //printf("thid: %'d\n", (uint16_t)thid);
     
     // neutral value
     int_t loc_uneq = 0;
@@ -256,7 +261,7 @@ __global__ void equal_column_kernel_old(
                 // read right values
                 ch_t tmp_val = *(blk_vals + shrd_mmry_j);
                 
-                //printf("i: %u, shrd: %u, j: %u, shrd: %u\n", (uint8_t) shrd_mmry_i, (uint8_t)*(blk_max_lens + shrd_mmry_i), (uint8_t) shrd_mmry_j, (uint8_t)*(blk_max_lens + shrd_mmry_j));
+                //printf("i: %'d, shrd: %'d, j: %'d, shrd: %'d\n", (uint8_t) shrd_mmry_i, (uint8_t)*(blk_max_lens + shrd_mmry_i), (uint8_t) shrd_mmry_j, (uint8_t)*(blk_max_lens + shrd_mmry_j));
                 // write to beginning
                 *(blk_uneqs + shrd_mmry_i) |= (*(blk_vals + shrd_mmry_i) != *(blk_vals + shrd_mmry_j));
                 *(blk_vals + shrd_mmry_i) = *(blk_vals + shrd_mmry_j);
@@ -293,7 +298,7 @@ __global__ void equal_column_kernel(
     
 __global__ void model_error_kernel(
     ky_t* keys, ix_size_t processed, ix_size_t start_i, fp_t* B,
-    const ky_size_t* feat_indices, ix_size_t m, ky_size_t n,
+    const ky_size_t* feat_indices, ix_size_t m, ky_size_t n_tilde,
     fp_t* dev_acc_error, fp_t* dev_min_error, fp_t* dev_max_error,
     int_t* mutex) {
 
@@ -306,19 +311,22 @@ __global__ void model_error_kernel(
         
         fp_t loc_acc_err = 0;
        
-        // dot product (prediction)
-        for (ky_size_t feat_i = 0; feat_i < n; ++feat_i) {
-            ky_size_t char_i = *(feat_indices + feat_i);
-            loc_acc_err += ((fp_t) *(((ch_t*) *(keys + thid_i)) + char_i)) * *(B + feat_i);
-            //if (thid_i == 1) printf("key_err: %f, char: %f, feat: %f\n", loc_acc_err, (fp_t) *(((ch_t*) *(keys + thid_i)) + char_i), *(B + feat_i));
+        // dot product (prediction) + bias constant
+        for (ky_size_t feat_i = 0; feat_i < n_tilde; ++feat_i) {
+            if (feat_i < n_tilde - 1) {
+                ky_size_t char_i = *(feat_indices + feat_i);
+                loc_acc_err += ((fp_t) *(((ch_t*) *(keys + thid_i)) + char_i)) * *(B + feat_i);
+            } else {
+                loc_acc_err += *(B + feat_i);
+            }
         }
         
         // subtract actual position (key error)
         loc_acc_err -= (processed + start_i + thid_i);
 
-        //printf("key_i: %lu, key_err: %f\n", (uint16_t)thid_i, loc_acc_err);
+        //printf("key_i: %'d, key_err: %f\n", (uint16_t)thid_i, loc_acc_err);
 
-        //printf("thid_i: %u, err: %f\n", (uint16_t)thid_i, loc_acc_err);
+        //printf("thid_i: %'d, err: %f\n", (uint16_t)thid_i, loc_acc_err);
         
         // declare min an max variable
         fp_t loc_min_err = loc_acc_err;
@@ -331,7 +339,7 @@ __global__ void model_error_kernel(
             fp_t tmp_max_err = __shfl_down_sync(0xFFFFFFFF, loc_max_err, offset);
 
             if (threadIdx.x % (offset * 2) == 0 && thid_i + offset < m && threadIdx.x % 32 + offset < 32) {
-                //printf("thid_i: %u, offset: %u, loc: %f, tmp: %f, loc: %f, tmp: %f, loc: %f, tmp: %f\n", (uint16_t)thid_i, offset, loc_acc_err, tmp_acc_err, loc_min_err, tmp_min_err, loc_max_err, tmp_min_err);
+                //printf("thid_i: %'d, offset: %'d, loc: %f, tmp: %f, loc: %f, tmp: %f, loc: %f, tmp: %f\n", (uint16_t)thid_i, offset, loc_acc_err, tmp_acc_err, loc_min_err, tmp_min_err, loc_max_err, tmp_min_err);
                 
                 // sum
                 loc_acc_err += tmp_acc_err;
@@ -387,7 +395,7 @@ __global__ void model_error_kernel(
         
         // begin block reduction
         if (threadIdx.x == 0) {
-            //if ((thid_i / blockDim.x) < 1000) printf("thid_i: %u, acc: %f\n", (uint16_t)(thid_i / blockDim.x), *blk_acc_errs);
+            //if ((thid_i / blockDim.x) < 1000) printf("thid_i: %'d, acc: %f\n", (uint16_t)(thid_i / blockDim.x), *blk_acc_errs);
             // sum
             atomicAdd(dev_acc_error, *blk_acc_errs);
             

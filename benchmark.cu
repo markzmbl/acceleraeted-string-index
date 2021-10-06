@@ -1,3 +1,4 @@
+
 #include <stdint.h>
 #include <stdio.h>
 #include <fstream>
@@ -34,11 +35,11 @@ int main() {
     read_keys(keys, FILENAME);
     
     // parameters
-    const ix_size_t et = 128;
+    const fp_t et = 3.5E-8;
     const ix_size_t pt = 16;
-    const ix_size_t fstep = 550;
-    const ix_size_t bstep = 50;
-    const ix_size_t min_size = 400;
+    const ix_size_t fstep = 10'000;
+    const ix_size_t bstep = 1'000;
+    const ix_size_t min_size = CUDACORES;
 
     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
     // group meta data   
@@ -62,4 +63,3 @@ int main() {
 
     return 0;
 }
-                        
