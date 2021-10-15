@@ -12,7 +12,7 @@
 
 
 
-inline Status calculate_group(
+inline GroupStatus calculate_group(
     const ky_t* hst_keys,ky_size_t* hst_pair_lens, ky_t* dev_keys, ky_size_t* pair_lens, group_t* group,
     ix_size_t processed, ix_size_t start_i, ix_size_t m,
     ky_size_t feat_thresh, fp_t error_thresh,
@@ -43,7 +43,7 @@ inline Status calculate_group(
     fp_t host_min_error = float_max;
     fp_t host_max_error = -float_max;
     fp_t avg_error = 0;
-    fp_t* model;
+    fp_t* weights;
         
     //gpu
     GPUInt dev_min_len;
@@ -434,7 +434,7 @@ inline Status calculate_group(
     assert(cudaDeviceSynchronize() == cudaSuccess);
     assert(CUBLAS_STATUS_SUCCESS == cublas_status);
 
-    // model sanity check
+    // weights sanity check
     if (sanity_check) {
         cudaMemcpy(hst_B, B.ptr(), n_tilde * sizeof(fp_t), cudaMemcpyDeviceToHost);
         for (ix_size_t feat_i = 0; feat_i < n_tilde; ++feat_i) {
@@ -442,7 +442,7 @@ inline Status calculate_group(
 
             if ((*(hst_B + feat_i) != *(hst_B + feat_i)) != false) {
                 printf(
-                    "[SANITY]\tNan Model\n"
+                    "[SANITY]\tNan weights\n"
                     "\tstart:\t%'d\n"
                     "\tm:\t%'d\n"
                     "\tn:\t%'d\n"
@@ -552,7 +552,7 @@ inline Status calculate_group(
     // determine average error
     avg_error = host_acc_error / m;
 
-    // check model threshold
+    // check weights threshold
     if (abs(avg_error) > error_thresh && !force) {
 
         if (debug) {
@@ -574,9 +574,9 @@ inline Status calculate_group(
         return threshold_exceed;
     }
 
-    // copy final model
-    assert(cudaMallocHost(&model, B.size()) == cudaSuccess);
-    assert(cudaMemcpy(model, B.ptr(), B.size(), cudaMemcpyDeviceToHost) == cudaSuccess);
+    // copy final weights
+    assert(cudaMallocHost(&weights, B.size()) == cudaSuccess);
+    assert(cudaMemcpy(weights, B.ptr(), B.size(), cudaMemcpyDeviceToHost) == cudaSuccess);
 
     // free B
     assert(B.free() == true);
@@ -588,7 +588,7 @@ inline Status calculate_group(
     group->m            = m;
     group->n            = n;
     group->feat_indices = host_feat_indices;
-    group->model        = model;
+    group->weights      = weights;
     group->avg_err      = avg_error;
     group->min_err      = host_min_error;    
     group->max_err      = host_max_error;
@@ -607,6 +607,7 @@ inline void grouping(
     ix_size_t fstep, ix_size_t bstep, ix_size_t min_size,
     std::vector<group_t> &groups) {
 
+    cudaError_t cudaStat = cudaSuccess;
 
     // cusolver and cublas handles
     cusolverDnHandle_t cusolverH = nullptr;
@@ -646,8 +647,15 @@ inline void grouping(
     // calculate common prefix lenghts
     pair_prefix_kernel
         <<<get_block_num(batchlen - 1), BLOCKSIZE>>>(dev_keys, dev_pair_lens, batchlen);
-    assert(cudaGetLastError() == cudaSuccess);
-
+    cudaStat = cudaGetLastError();
+    if(cudaStat != cudaSuccess) {
+        printf(
+            "[ASSERTION]\tAfter Pair Prefix Kernel\n"
+            "\tcudaError:\t%s\n",
+            cudaGetErrorString(cudaStat)
+        );
+        exit(1);
+    }
     while (processed + end_i + fstep < num_keys) {
 
         if (processed > 0) {
@@ -656,9 +664,16 @@ inline void grouping(
             // calculate common prefix lenghts
             pair_prefix_kernel
                 <<<get_block_num(batchlen - 1), BLOCKSIZE>>>(dev_keys, dev_pair_lens, batchlen);
-            assert(cudaGetLastError() == cudaSuccess);
+            cudaStat = cudaGetLastError();
+            if(cudaStat != cudaSuccess) {
+                printf(
+                    "[ASSERTION]\tAfter Pair Prefix Kernel\n"
+                    "\tcudaError:\t%s\n",
+                    cudaGetErrorString(cudaStat)
+                );
+                exit(1);
+            }
         }
-
         //print_kernel<<<1, 100>>>(dev_keys, 100);
         //cudaDeviceSynchronize();
 
@@ -699,20 +714,21 @@ inline void grouping(
         //    &cusolverH, &cusolverP, &cublasH, false);
 
         // while batch is sufficent
-        while (end_i + fstep < batchlen) {
+        while (end_i + fstep <= batchlen) {
             
             group_t group;
-            Status result = success;
+            GroupStatus result = success;
 
             unsigned int fsteps = 0;
             // increase loop
-            while (end_i + fstep < batchlen && result == success) {
+            while (end_i + fstep <= batchlen && result == success) {
 
-                // free feature indices and model values
+                ix_size_t step = 1;
+                // free feature indices and weights values
                 // as group is still expanding
                 if (fsteps > 0) {
                     assert(cudaFreeHost(group.feat_indices)  == cudaSuccess);
-                    assert(cudaFreeHost(group.model)         == cudaSuccess);
+                    assert(cudaFreeHost(group.weights)         == cudaSuccess);
                     if (debug) {
                         printf(
                             "[DEBUG]\tGroup Increase\n"
@@ -730,17 +746,19 @@ inline void grouping(
 
                 end_i += fstep;
 
-                ix_size_t step = 1;
                 
-                assert(batchlen > end_i - start_i);
-
-                result = calculate_group(keys, hst_pair_lens,
-                    dev_keys, dev_pair_lens, &group,
-                    processed, start_i, end_i - start_i, pt, et, step,
-                    &cusolverH, &cusolverP, &cublasH, false);
+                assert(batchlen >= end_i - start_i);
 
 
-                assert(result != out_of_memory);
+                do {
+                    result = calculate_group(keys, hst_pair_lens,
+                        dev_keys, dev_pair_lens, &group,
+                        processed, start_i, end_i - start_i, pt, et, step,
+                        &cusolverH, &cusolverP, &cublasH, false);
+                    if (result == out_of_memory) {
+                        ++step;
+                    }
+                } while (result != out_of_memory);
 
                 ++fsteps;
 
@@ -787,9 +805,13 @@ inline void grouping(
         }
 
         // end of batch
-        processed += start_i;
-        end_i -= start_i;
-        start_i = 0;
+        if (end_i - start_i == batchlen) {
+            
+        } else {
+            processed += start_i;
+            end_i -= start_i;
+            start_i = 0;
+        }
 
         // 
 
@@ -797,7 +819,7 @@ inline void grouping(
     // last group
     group_t group;
     ix_size_t step = 1;
-    Status result = calculate_group(keys, hst_pair_lens,
+    GroupStatus result = calculate_group(keys, hst_pair_lens,
         dev_keys, dev_pair_lens, &group,
         processed, start_i, num_keys - processed - start_i, pt, et, step,
         &cusolverH, &cusolverP, &cublasH, true);
@@ -816,4 +838,185 @@ inline void grouping(
     cublasDestroy(cublasH);
 }
 
+
+
+inline ix_size_t get_position(
+    const index_t &index, ky_t &key, ky_t* keys) {
+    
+    QueryStatus result;
+
+    ky_t* dev_key;
+    int_t hst_pos = 0;
+    int_t* dev_pos;
+    bool hst_in_block = false;
+    bool* dev_in_block;
+    assert(cudaMalloc(&dev_key, sizeof(ky_t)) == cudaSuccess);
+    assert(cudaMalloc(&dev_pos, sizeof(int_t)) == cudaSuccess);
+    assert(cudaMalloc(&dev_in_block, sizeof(bool)) == cudaSuccess);
+    assert(cudaMemcpy(dev_key, &key, sizeof(ky_t), cudaMemcpyHostToDevice) == cudaSuccess);
+
+    // find group
+//    if (index.root_n > 0) {
+//        do {
+//            
+//            assert(cudaMemcpy(dev_group_i, &int_max, sizeof(int_t), cudaMemcpyHostToDevice) == cudaSuccess);
+//            assert(cudaMemset(dev_in_block, false, sizeof(bool)) == cudaSuccess);
+//
+//            query_kernel
+//                <<<get_block_num(index.group_n),  BLOCKSIZE, BLOCKSIZE / 32 * sizeof(int64_t)>>>
+//                (dev_key, index.group_n, index.dev_group_pivots, dev_group_i, dev_in_block);
+//            assert(cudaGetLastError() == cudaSuccess);
+//            cudaDeviceSynchronize();
+//            assert(cudaMemcpy(&hst_group_i, dev_group_i, sizeof(int_t), cudaMemcpyDeviceToHost) == cudaSuccess);
+//            assert(cudaMemcpy(&hst_in_block, dev_in_block, sizeof(bool), cudaMemcpyDeviceToHost) == cudaSuccess);
+//
+//
+//            if (hst_group_i != int_max) {
+//                if (hst_in_block == true) {
+//                    result = found_target;
+//                } else {
+//                    result = left_of_target;
+//                }
+//            } else {
+//                result = right_of_target;
+//            }
+//        
+//        } while (result != found_target);
+//
+//        assert(cudaFree(dev_group_i) == cudaSuccess);
+//        assert(cudaFree(dev_in_block) == cudaSuccess);
+//    } else {
+//        hst_group_i = 0;
+//    }
+
+    group_t* group = index.groups + hst_pos;
+
+    // determine query range
+    fp_t prediction = 0;
+    for (ky_size_t feat_i = 0; feat_i < group->n + 1; ++feat_i) {
+        if (feat_i == group->n) {
+            prediction += *(group->weights + feat_i);
+        } else {
+            ky_size_t char_i = *(group->feat_indices + feat_i);
+            ch_t character = *(((ch_t*) key) + char_i);
+            prediction += *(group->weights + feat_i) * ((fp_t) character);
+        }
+    }
+
+    // query range start with group border
+    ix_size_t query_start = (ix_size_t) (prediction + group->min_err);
+    query_start = (query_start < group->start) ? group->start : query_start;
+
+    // query range end with group border
+    ix_size_t query_end = (ix_size_t) (prediction + group->max_err + 0.5) + 1;
+    query_end = (query_end > group->start + group->m) ? group->start + group->m : query_end;
+
+
+    cudaStream_t stream_left;
+    cudaStream_t stream_mid;
+    cudaStream_t stream_right;
+
+    cudaStreamCreate(&stream_left);
+    cudaStreamCreate(&stream_mid);
+    cudaStreamCreate(&stream_right);
+
+    ky_t* buffer_left;
+    ky_t* buffer_mid;
+    ky_t* buffer_right;
+
+    cudaMalloc(&buffer_left, QUERYSIZE * sizeof(ky_t));
+    cudaMalloc(&buffer_mid, QUERYSIZE * sizeof(ky_t));
+    cudaMalloc(&buffer_right, QUERYSIZE * sizeof(ky_t));
+
+    // kernel start
+    if (query_end - query_start <= QUERYSIZE) {
+        
+    } else if (query_end - query_start <= 2 * QUERYSIZE) {
+    } else {
+
+        ix_size_t mid = prediction - QUERYSIZE / 2;
+        ix_size_t left = (mid - query_start - QUERYSIZE) / 2;
+        left = (left < query_start) ? query_start : left;
+        ix_size_t right = (query_end - mid - QUERYSIZE) / 2;
+        right = (right > query_end - QUERYSIZE - 1) ? query_end - QUERYSIZE - 1 : right;
+
+        QueryStatus* result = nullptr;
+        cudaMemcpyAsync(buffer_mid, keys + mid, QUERYSIZE * sizeof(ky_t), cudaMemcpyHostToDevice, stream_mid);
+
+        do {
+
+            // fill left and write buffer
+            if (left < ix_max) {
+                cudaMemcpyAsync(buffer_left,  keys + left,  QUERYSIZE * sizeof(ky_t), cudaMemcpyHostToDevice, stream_left);
+            }
+            if (right < ix_max) {
+                cudaMemcpyAsync(buffer_right, keys + right, QUERYSIZE * sizeof(ky_t), cudaMemcpyHostToDevice, stream_right);
+            }
+            // run kernel for mid buffer in the mean time
+            query_kernel
+                <<<get_block_num(QUERYSIZE), BLOCKSIZE, 0, stream_mid>>>
+                (dev_key, buffer_mid, QUERYSIZE, dev_pos, dev_in_block);
+            // get result from mid buffer
+            cudaMemcpy(&hst_pos, dev_pos, sizeof(int_t), cudaMemcpyDeviceToHost);
+            cudaMemcpy(&hst_in_block, dev_in_block, sizeof(int_t), cudaMemcpyDeviceToHost);
+
+            // evaluate result
+            if (hst_pos != int_max) {
+                if (hst_in_block == true) {
+                    *result = found_target;
+                } else {
+                    if (memcmp(key, keys + hst_pos, sizeof(ky_t)) == 0) {
+                        *result = found_target;
+                    } else {
+                        *result = left_of_target;
+                    }
+                }
+            } else {
+                *result = right_of_target;
+            }
+
+            switch (*result) {
+                case left_of_target:
+                    swap_buffer_and_stream(buffer_mid, &stream_mid, buffer_left, &stream_left);
+                    query_end = mid - 1;
+                    break;
+                
+                case right_of_target:
+                    swap_buffer_and_stream(buffer_mid, &stream_mid, buffer_right, &stream_right);
+                    query_start = mid + QUERYSIZE;
+                    break;
+            }
+
+            if (query_end - query_start <= QUERYSIZE) {
+                // do not copy asynchronosly as it will be the last search
+                left = ix_max;
+                right = ix_max; 
+            } else if (query_end - query_start <= 2 * QUERYSIZE) {
+                // only one stream is necessary
+                if (mid - query_start < QUERYSIZE) {
+                    left = query_start;
+                    right = ix_max;
+                } else {
+                    right = query_end - QUERYSIZE - 1;
+                    left = ix_max;
+                }
+            } else {
+                left = (mid - query_start - QUERYSIZE) / 2;
+                left = (left < query_start) ? query_start : left;
+                right = (query_end - mid - QUERYSIZE) / 2;
+                right = (right > query_end - QUERYSIZE - 1) ? query_end - QUERYSIZE - 1 : right;
+            }
+
+        } while (*result != found_target);
+    }
+
+    cudaStreamDestroy(stream_left);
+    cudaStreamDestroy(stream_mid);
+    cudaStreamDestroy(stream_right);
+
+    cudaFree(buffer_left);
+    cudaFree(buffer_mid);
+    cudaFree(buffer_right);
+
+}
 #endif  // _SINDEX_

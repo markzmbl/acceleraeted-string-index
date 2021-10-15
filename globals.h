@@ -63,7 +63,9 @@ int get_block_size(cudaDeviceProp prop, int cudacores) {
 
 
 // return enum
-enum Status {success, threshold_exceed, out_of_memory, batch_end_reached};
+enum GroupStatus {success, threshold_exceed, out_of_memory, batch_end_reached};
+enum QueryStatus {found_target, left_of_target, right_of_target};
+
 
 // debug flag
 bool verbose = true;
@@ -78,7 +80,7 @@ const fp_t float_max = DBL_MAX;
 const fp_t float_min = -float_max;
 const fp_t float_eps = DBL_EPSILON;
 const fp_t eps = 0.2;
-int_t int_max = UINT32_MAX;
+const int_t int_max = UINT32_MAX;
 #define SINGLE false
 // bias value A
 const fp_t bias = 1;
@@ -86,6 +88,7 @@ const fp_t bias = 1;
 // index size
 typedef uint64_t ix_size_t;
 const ix_size_t NUMKEYS = 200'000'000;
+const ix_size_t ix_max = UINT64_MAX;
 
 // character
 typedef char ch_t;
@@ -105,13 +108,25 @@ struct group_t {
     ix_size_t m;
     ky_size_t n;
     ky_size_t* feat_indices;
-    fp_t* model;
+    fp_t* weights;
+    ky_size_t* dev_feat_indices;
+    fp_t* dev_weights;
     fp_t avg_err;
     fp_t min_err;
     fp_t max_err;
     unsigned int fsteps;
     unsigned int bsteps;
 };
+
+// index type
+struct index_t {
+    ix_size_t root_n;
+    group_t* roots;
+    ix_size_t group_n;
+    group_t* groups;
+    ky_t* dev_group_pivots;
+};
+
 
 
 // gpu
@@ -122,8 +137,10 @@ const ix_size_t BLOCKSIZE = get_block_size(prop, CUDACORES);
 const ix_size_t BLOCKNUM = (ix_size_t) (CUDACORES / BLOCKSIZE);
 //const ix_size_t VRAM = 4.2331E+9; // whole capacity
 const ix_size_t VRAM = prop.totalGlobalMem;
-const float LOADFACTOR = 0.6;
-const ix_size_t BATCHLEN = safe_division(VRAM * LOADFACTOR, KEYSIZE);
+const float LOADFACTOR = 0.12;
+//const ix_size_t BATCHLEN = safe_division(VRAM * LOADFACTOR, KEYSIZE);
+const ix_size_t BATCHLEN = 60'000'000;
+const ix_size_t QUERYSIZE = 2 * CUDACORES;
 
 const char FILENAME[] = "./gene/gene200.txt";
 

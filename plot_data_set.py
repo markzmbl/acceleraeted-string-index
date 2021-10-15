@@ -18,5 +18,6 @@ file = args['file']
 with open(file, 'r') as f:
     for i, line in enumerate(f):
         plt.plot(i, gene_string_to_num(line), 'ro')
+        break
 
-plt.savefig(file[file.find('.') : ] + ".png")
+plt.savefig(file[ : file.find('.') ] + ".png")

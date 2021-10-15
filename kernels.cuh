@@ -4,7 +4,7 @@
 #include <cmath>
 #include <float.h>
 #include "globals.h"
-
+#include "helpers.h"
 
 #ifndef _KERNELS_
 #define _KERNELS_
@@ -13,25 +13,25 @@
 
 __global__ void print_kernel(const ky_t* array, ix_size_t len) {
     const ix_size_t thid = blockDim.x * blockIdx.x + threadIdx.x;
+    const ky_t* key = (ky_t*) array + thid;
     if (thid < len)
-        printf("%'d: %c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c\n",(uint16_t) thid,
-            *(*(array + thid)),
-            *(*(array + thid) + 1),
-            *(*(array + thid) + 2),
-            *(*(array + thid) + 3),
-            *(*(array + thid) + 4),
-            *(*(array + thid) + 5),
-            *(*(array + thid) + 6),
-            *(*(array + thid) + 7),
-            *(*(array + thid) + 8),
-            *(*(array + thid) + 9),
-            *(*(array + thid) + 10),
-            *(*(array + thid) + 11),
-            *(*(array + thid) + 12),
-            *(*(array + thid) + 13),
-            *(*(array + thid) + 14),
-            *(*(array + thid) + 15)
-
+        printf("%u: %c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c\n",(uint16_t) thid,
+            *(((ch_t*) key) + 0),
+            *(((ch_t*) key) + 1),
+            *(((ch_t*) key) + 2),
+            *(((ch_t*) key) + 3),
+            *(((ch_t*) key) + 4),
+            *(((ch_t*) key) + 5),
+            *(((ch_t*) key) + 6),
+            *(((ch_t*) key) + 7),
+            *(((ch_t*) key) + 8),
+            *(((ch_t*) key) + 9),
+            *(((ch_t*) key) + 10),
+            *(((ch_t*) key) + 11),
+            *(((ch_t*) key) + 12),
+            *(((ch_t*) key) + 13),
+            *(((ch_t*) key) + 14),
+            *(((ch_t*) key) + 15)
         );
 }
 
@@ -421,6 +421,88 @@ __global__ void model_error_kernel(
     }
 }
 
+
+__global__ void query_kernel(
+    const ky_t* query, const ky_t* keys, const ix_size_t range,
+    int_t* dev_pos, bool* in_block) {
+    
+    const ix_size_t thid = blockDim.x * blockIdx.x + threadIdx.x;
+    for (ix_size_t thid_i = thid; thid_i < range; thid_i += gridDim.x * blockDim.x) {
+
+        ix_size_t loc_pos = thid_i;
+        ix_size_t ref_pos = thid_i;
+
+        const ky_t* pivot = keys + thid_i;
+        for (ky_size_t char_i = 0; char_i < sizeof(ky_t); ++char_i) {
+            ch_t query_char = *(((ch_t*) *query) + char_i);
+            ch_t key_char = *(((ch_t*) pivot) + char_i);
+            if (key_char < query_char) {
+                loc_pos = int_max;
+                break;
+            } else if (key_char > query_char) {
+                break;
+            }
+        }
+        // begin warp shuffle
+        for (uint8_t offset = 1; offset < 32; offset *= 2) {
+            int_t tmp_pos = __shfl_down_sync(0xFFFFFFFF, loc_pos, offset);
+
+            if (threadIdx.x % (offset * 2) == 0 && thid_i + offset < range && threadIdx.x % 32 + offset < 32) {  
+                if (tmp_pos < int_max && (tmp_pos < loc_pos || loc_pos == int_max)) {
+                    loc_pos = tmp_pos;
+                }
+            }
+        }
+        printf("thread:\tthid_i: %u -> %i\n", (uint16_t) thid_i, (int16_t) loc_pos);
+
+        // declare shared memory for block wide communication
+        extern __shared__ int_t shrd_mmry4[];
+        int_t* blk_pos = shrd_mmry4;
+
+        ix_size_t shrd_mmry_i;
+        ix_size_t shrd_mmry_j;
+
+        // write into shared memory
+        if (threadIdx.x % 32 == 0) {
+            printf("warp:\tthid_i: %u -> %i\n", (uint16_t) thid_i, (int16_t) loc_pos);
+            shrd_mmry_i = threadIdx.x / 32;
+            *(blk_pos + shrd_mmry_i) = loc_pos;
+        }
+        
+        
+        // begin block shuffled
+        for (ix_size_t offset = 32; offset < blockDim.x; offset *= 2) {
+            
+            __syncthreads();
+            if (threadIdx.x % (offset * 2) == 0  && thid_i + offset < range && threadIdx.x + offset < blockDim.x) {
+                               
+                shrd_mmry_j = (threadIdx.x + offset) / 32;
+                
+                loc_pos = *(blk_pos + shrd_mmry_i);
+                int_t tmp_pos = *(blk_pos + shrd_mmry_j);
+                if (tmp_pos < int_max && (tmp_pos < loc_pos || loc_pos == int_max)) {
+                    *(blk_pos + shrd_mmry_i) = tmp_pos;
+                }
+            }
+        }
+        // begin block reduction
+        if (threadIdx.x == 0) {
+            //printf("block:\tthid_i: %u -> %i\n", (uint16_t) thid_i, (int16_t) *blk_pos);
+            // min
+            if (*blk_pos < int_max) {
+                if (*blk_pos != ref_pos) {
+                    *in_block = true;
+                    *dev_pos = *blk_pos;
+                } else {
+                    atomicMin(dev_pos, (int_t) *blk_pos);
+                }
+                break;
+            }
+        }
+    }
+}
+/*
+*/
 
 
 #endif  // _KERNELS_

@@ -95,7 +95,7 @@ inline bool allocate_gpu_memory(std::vector<GPUVar*> &requests) {
 
     cudaMemGetInfo(&free_space, &total_space);
     if (required_memory > free_space) {
-        return out_of_memory;
+        return false;
     } else {
         for (size_t i = 0; i < requests.size(); ++i) {
             if (requests[i]->allocate() == false) {
@@ -117,5 +117,33 @@ void printMatrix(int m, int n, const fp_t*A, int lda, const char* name) {
         }
     }
 }
+
+// 0 equal, -1 less than, 1 greater than
+inline int8_t compare_keys(const ky_t &key0, const ky_t &key1) {
+    for (ky_size_t char_i = 0; char_i < sizeof(ky_t); ++char_i) {
+        ch_t char0 = *(((ch_t*) key0) + char_i);
+        ch_t char1 = *(((ch_t*) key1) + char_i);
+        if (char0 < char1) {
+            return -1;
+        } else if (char0 > char1) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+inline void swap_buffer_and_stream(
+        ky_t* buffer0, cudaStream_t* stream0,
+        ky_t* buffer1, cudaStream_t* stream1) {
+
+    ky_t* tmp_buffer = buffer0;
+    cudaStream_t* tmp_stream = stream0;
+    buffer0 = buffer1;
+    stream0 = stream1;
+    buffer1 = tmp_buffer;
+    stream1 = tmp_stream;
+
+}
+
 
 #endif  // _HELPERS_
