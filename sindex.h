@@ -62,6 +62,17 @@ inline GroupStatus calculate_group(
     GPUFloat dev_min_error;
     GPUFloat dev_max_error;
 
+    // set step and m_star to avoid memory exhaustion
+    fp_t step;
+    ix_size_t m_star;
+    if (m > MAXSAMPLES) {
+        step = m / MAXSAMPLES;
+        mstar = MAXSAMPLES;
+    } else {
+        step = 1;
+        m_star = m;
+    }
+
     // sanity check variables
     fp_t* hst_A;
     fp_t* hst_B;
@@ -81,9 +92,10 @@ inline GroupStatus calculate_group(
     assert(cudaMemset(dev_max_len.ptr(), 0,       dev_max_len.size()) == cudaSuccess);
 
     // --- range query
+    // m_star - 1 because the ith key is compared with the (i+step)th key
     rmq_kernel
-        <<<get_block_num(m), BLOCKSIZE, BLOCKSIZE / 32 * 2 * sizeof(ky_size_t)>>>
-        (pair_lens, start_i, m - 1, dev_min_len.ptr(), dev_max_len.ptr());
+        <<<get_block_num(m / step), BLOCKSIZE, BLOCKSIZE / 32 * 2 * sizeof(ky_size_t)>>>
+        (pair_lens, start_i, m_star - 1, dev_min_len.ptr(), dev_max_len.ptr(), step);
     assert(cudaPeekAtLastError() == cudaSuccess);
 
 
@@ -93,7 +105,17 @@ inline GroupStatus calculate_group(
 
     // rmq sanity check
     if (sanity_check) {
-        ky_size_t san_min_len = *std::min_element(hst_pair_lens + start_i, hst_pair_lens + start_i + m - 1);
+        ky_size_t san_min_len = ky_size_max;
+        ky_size_t san_max_len = 0;
+        for (fp_t key_i = 0; key_i < m_star; key_i += step) {
+            ky_size_t key_len = *(hst_pair_lens + ((ix_size_t) key_i));
+            if (key_len < san_min_len) {
+                san_min_len = key_len;
+            }
+            if (key_len > san_max_len) {
+                san_max_len = key_len;
+            }
+        }
         if (san_min_len != host_min_len) {
             printf(
                 "[SANITY]\tMin Len\n"
@@ -108,7 +130,6 @@ inline GroupStatus calculate_group(
             );
             exit(1);
         }
-        ky_size_t san_max_len = *std::max_element(hst_pair_lens + start_i, hst_pair_lens + start_i + m - 1);
         if (san_max_len != host_max_len) {
             printf(
                 "[SANITY]\tMax Len\n"
@@ -604,7 +625,7 @@ inline GroupStatus calculate_group(
 inline void grouping(
     const ky_t* keys, ix_size_t num_keys,
     fp_t et, ky_size_t pt,
-    ix_size_t fstep, ix_size_t bstep, ix_size_t min_size,
+    ix_size_t fstep, ix_size_t bstep,
     std::vector<group_t> &groups) {
 
     cudaError_t cudaStat = cudaSuccess;
@@ -773,8 +794,8 @@ inline void grouping(
                 // too gready -> not working
                 //assert(end_i > start_i);
                 bool force = false;
-                if (end_i - start_i <= min_size) {
-                    end_i = start_i + min_size;
+                if (end_i - start_i <= QUERYSIZE) {
+                    end_i = start_i + QUERYSIZE;
                     force = true;
                 }
                 result = calculate_group(keys, hst_pair_lens,
