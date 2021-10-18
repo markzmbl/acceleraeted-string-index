@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <math.h>
 
 #include "helpers.h"
 #include "globals.h"
@@ -16,7 +17,6 @@ inline GroupStatus calculate_group(
     const ky_t* hst_keys,ky_size_t* hst_pair_lens, ky_t* dev_keys, ky_size_t* pair_lens, group_t* group,
     ix_size_t processed, ix_size_t start_i, ix_size_t m,
     ky_size_t feat_thresh, fp_t error_thresh,
-    ix_size_t step,
     cusolverDnHandle_t* cusolverH,
     cusolverDnParams_t* cusolverP,
     cublasHandle_t* cublasH,
@@ -65,12 +65,15 @@ inline GroupStatus calculate_group(
     // set step and m_star to avoid memory exhaustion
     fp_t step;
     ix_size_t m_star;
+    ix_size_t m_1_star;
     if (m > MAXSAMPLES) {
-        step = m / MAXSAMPLES;
-        mstar = MAXSAMPLES;
+        step = ((fp_t) m) / MAXSAMPLES;
+        m_star = MAXSAMPLES;
+        m_1_star = ((ix_size_t) (fmod(m, step)) == 1) ? m_star - 1 : m_star;
     } else {
         step = 1;
         m_star = m;
+        m_1_star = m - 1;
     }
 
     // sanity check variables
@@ -94,8 +97,8 @@ inline GroupStatus calculate_group(
     // --- range query
     // m_star - 1 because the ith key is compared with the (i+step)th key
     rmq_kernel
-        <<<get_block_num(m / step), BLOCKSIZE, BLOCKSIZE / 32 * 2 * sizeof(ky_size_t)>>>
-        (pair_lens, start_i, m_star - 1, dev_min_len.ptr(), dev_max_len.ptr(), step);
+        <<<get_block_num(m_star), BLOCKSIZE, BLOCKSIZE / 32 * 2 * sizeof(ky_size_t)>>>
+        (pair_lens, start_i, m_star , dev_min_len.ptr(), dev_max_len.ptr(), step);
     assert(cudaPeekAtLastError() == cudaSuccess);
 
 
@@ -107,7 +110,7 @@ inline GroupStatus calculate_group(
     if (sanity_check) {
         ky_size_t san_min_len = ky_size_max;
         ky_size_t san_max_len = 0;
-        for (fp_t key_i = 0; key_i < m_star; key_i += step) {
+        for (fp_t key_i = 0; key_i < m - 1; key_i += step) {
             ky_size_t key_len = *(hst_pair_lens + ((ix_size_t) key_i));
             if (key_len < san_min_len) {
                 san_min_len = key_len;
@@ -172,8 +175,8 @@ inline GroupStatus calculate_group(
     assert(cudaMemset(dev_uneqs.ptr(), 0, dev_uneqs.size()) == cudaSuccess);
     assert(cudaMemset(col_vals.ptr(),  0, col_vals.size())  == cudaSuccess);
     equal_column_kernel
-        <<<get_block_num(m * n_star), BLOCKSIZE, BLOCKSIZE / 32 * (sizeof(ch_t) + sizeof(int_t))>>>
-        (dev_keys, start_i, host_min_len, m, n_star, dev_uneqs.ptr(), col_vals.ptr(), mutexes.ptr());
+        <<<get_block_num(m_star * n_star), BLOCKSIZE, BLOCKSIZE / 32 * (sizeof(ch_t) + sizeof(int_t))>>>
+        (dev_keys, start_i, host_min_len, m_star, n_star, dev_uneqs.ptr(), col_vals.ptr(), mutexes.ptr(), step);
     assert(cudaGetLastError() == cudaSuccess);
 
 
@@ -188,10 +191,10 @@ inline GroupStatus calculate_group(
     if (sanity_check) {
         for (ky_size_t feat_i = 0; feat_i < n_star; ++feat_i) {
             bool is_uneq = false;
-            for (ix_size_t key_i = 0; key_i < m; ++key_i) {
+            for (ix_size_t key_i = 0; key_i < m_star; ++key_i) {
                 ky_size_t char_i = host_min_len + feat_i;
-                const ky_t* key0 = hst_keys + processed + start_i + key_i;
-                const ky_t* key1 = hst_keys + processed + start_i + key_i + 1;
+                const ky_t* key0 = hst_keys + processed + start_i + (ix_size_t) (key_i * step);
+                const ky_t* key1 = hst_keys + processed + start_i + (ix_size_t) ((key_i + 1) * step);
                 ch_t char0 = *(((ch_t*) *key0) + char_i);
                 ch_t char1 = *(((ch_t*) *key1) + char_i);
                 if (char0 != char1) {
@@ -233,7 +236,7 @@ inline GroupStatus calculate_group(
     n_tilde = n + 1;
 
     // set correct count
-    A.count                = m * n_tilde;
+    A.count                = m_star * n_tilde;
     dev_feat_indices.count = n;
 
     // allocation
@@ -263,8 +266,8 @@ inline GroupStatus calculate_group(
 
     // --- write in column major format
     column_major_kernel
-        <<<get_block_num(m * n), BLOCKSIZE>>>
-        (dev_keys, A.ptr(), start_i, m, dev_feat_indices.ptr(), n_tilde);
+        <<<get_block_num(m_star * n), BLOCKSIZE>>>
+        (dev_keys, A.ptr(), start_i, m_star, dev_feat_indices.ptr(), n_tilde, step);
     cudaStat = cudaGetLastError();
     if(cudaStat != cudaSuccess) {
         printf(
@@ -278,10 +281,10 @@ inline GroupStatus calculate_group(
     if (sanity_check) {
         cudaMallocHost(&hst_A, A.size());
         cudaMemcpy(hst_A, A.ptr(), A.size(), cudaMemcpyDeviceToHost);
-        for (ix_size_t key_i = 0; key_i < m; ++key_i) {
-            const ky_t* key0 = hst_keys + processed + start_i + key_i;
+        for (ix_size_t key_i = 0; key_i < m_star; ++key_i) {
+            const ky_t* key0 = hst_keys + processed + start_i + ((ix_size_t) (key_i * step));
             for (ky_size_t feat_i = 0; feat_i < n_tilde; ++feat_i) {
-                fp_t feat1 = *(hst_A + feat_i * m + key_i);
+                fp_t feat1 = *(hst_A + feat_i * m_star + key_i);
                 fp_t feat0;
                 if (feat_i < n_tilde - 1) {
                     ky_size_t char_i = *(host_feat_indices + feat_i);
@@ -297,8 +300,9 @@ inline GroupStatus calculate_group(
 
 
 
+
     // set correct count
-    B.count   = m;
+    B.count   = m_star;
     tau.count = n_tilde;
 
     // allocation
@@ -313,14 +317,14 @@ inline GroupStatus calculate_group(
 
     // --- init B
     set_postition_kernel
-        <<<get_block_num(m), BLOCKSIZE>>>
-        (B.ptr(), processed, start_i, m);
+        <<<get_block_num(m_star), BLOCKSIZE>>>
+        (B.ptr(), processed, start_i, m_star, step);
 
     if (sanity_check) {
         cudaMallocHost(&hst_B, B.size());
         cudaMemcpy(hst_B, B.ptr(), B.size(), cudaMemcpyDeviceToHost);
-        for (ix_size_t key_i = 0; key_i < m; ++key_i) {
-            assert(*(hst_B + key_i) == processed + start_i + key_i);
+        for (ix_size_t key_i = 0; key_i < m_star; ++key_i) {
+            assert(*(hst_B + key_i) == processed + start_i + ((ix_size_t) (key_i * step)));
         }
     }
 
@@ -332,8 +336,8 @@ inline GroupStatus calculate_group(
     uint64_t d_work_size_qr = 0;
     uint64_t h_work_size_qr = 0;
     cusolver_status = cusolverDnXgeqrf_bufferSize(
-        *cusolverH, *cusolverP, m, n_tilde,
-        cuda_float, A.ptr(), m /*lda*/,
+        *cusolverH, *cusolverP, m_star, n_tilde,
+        cuda_float, A.ptr(), m_star /*lda*/,
         cuda_float, tau.ptr(),
         cuda_float, &d_work_size_qr, &h_work_size_qr
     );
@@ -343,18 +347,18 @@ inline GroupStatus calculate_group(
     #if SINGLE
     cusolver_status = cusolverDnSormqr_bufferSize(
         *cusolverH, CUBLAS_SIDE_LEFT, CUBLAS_OP_T,
-        m, 1 /*nrhs*/, n_tilde,
-        A.ptr(), m /*lda*/,
+        m_star, 1 /*nrhs*/, n_tilde,
+        A.ptr(), m_star /*lda*/,
         tau.ptr(), B.ptr(),
-        m /*ldb*/, &d_work_size_tm
+        m_star /*ldb*/, &d_work_size_tm
     );
     #else
     cusolver_status = cusolverDnDormqr_bufferSize(
         *cusolverH, CUBLAS_SIDE_LEFT, CUBLAS_OP_T,
-        m, 1 /*nrhs*/, n_tilde,
-        A.ptr(), m /*lda*/,
+        m_star, 1 /*nrhs*/, n_tilde,
+        A.ptr(), m_star /*lda*/,
         tau.ptr(), B.ptr(),
-        m /*ldb*/, &d_work_size_tm
+        m_star /*ldb*/, &d_work_size_tm
     );
     #endif
     assert(cusolver_status == CUSOLVER_STATUS_SUCCESS);
@@ -378,8 +382,8 @@ inline GroupStatus calculate_group(
     // **** compute QR factorization ****
     // actual QR factorization
     cusolver_status = cusolverDnXgeqrf(
-        *cusolverH, *cusolverP, m, n_tilde,
-        cuda_float, A.ptr(), m /*lda*/,
+        *cusolverH, *cusolverP, m_star, n_tilde,
+        cuda_float, A.ptr(), m_star /*lda*/,
         cuda_float, tau.ptr(), 
         cuda_float, d_work.ptr(), d_work_size,
         h_work, h_work_size, dev_info.ptr()
@@ -402,15 +406,15 @@ inline GroupStatus calculate_group(
     #if SINGLE
     cusolver_status= cusolverDnSormqr(
         *cusolverH, CUBLAS_SIDE_LEFT, CUBLAS_OP_T,
-        m, 1 /*nrhs*/, n_tilde,
-        A.ptr(), m /*lda*/, tau.ptr(), B.ptr(), m /*ldb*/,
+        m_star, 1 /*nrhs*/, n_tilde,
+        A.ptr(), m_star /*lda*/, tau.ptr(), B.ptr(), m_star /*ldb*/,
         d_work.ptr(), d_work_size, dev_info.ptr()
     );
     #else
     cusolver_status= cusolverDnDormqr(
         *cusolverH, CUBLAS_SIDE_LEFT, CUBLAS_OP_T,
-        m, 1 /*nrhs*/, n_tilde,
-        A.ptr(), m /*lda*/, tau.ptr(), B.ptr(), m /*ldb*/,
+        m_star, 1 /*nrhs*/, n_tilde,
+        A.ptr(), m_star /*lda*/, tau.ptr(), B.ptr(), m_star /*ldb*/,
         d_work.ptr(), d_work_size, dev_info.ptr()
     );
     #endif
@@ -430,7 +434,7 @@ inline GroupStatus calculate_group(
             "\tm:\t%'d\n"
             "\tn\t%'d",
             host_info,
-            m,
+            m_star,
             n
         );
         exit(1);
@@ -444,12 +448,12 @@ inline GroupStatus calculate_group(
     #if SINGLE
     cublas_status = cublasStrsm(
         *cublasH, CUBLAS_SIDE_LEFT, CUBLAS_FILL_MODE_UPPER, CUBLAS_OP_N, CUBLAS_DIAG_NON_UNIT,
-        n_tilde, 1 /*nrhs*/, &one, A.ptr(), m /*lda*/, B.ptr(), m /*ldb*/
+        n_tilde, 1 /*nrhs*/, &one, A.ptr(), m_star /*lda*/, B.ptr(), m_star /*ldb*/
     );
     #else
     cublas_status = cublasDtrsm(
         *cublasH, CUBLAS_SIDE_LEFT, CUBLAS_FILL_MODE_UPPER, CUBLAS_OP_N, CUBLAS_DIAG_NON_UNIT,
-        n_tilde, 1 /*nrhs*/, &one, A.ptr(), m /*lda*/, B.ptr(), m /*ldb*/
+        n_tilde, 1 /*nrhs*/, &one, A.ptr(), m_star /*lda*/, B.ptr(), m_star /*ldb*/
     );
     #endif
     assert(cudaDeviceSynchronize() == cudaSuccess);
@@ -469,7 +473,7 @@ inline GroupStatus calculate_group(
                     "\tn:\t%'d\n"
                     "\tmodel:\t",
                     start_i,
-                    m,
+                    m_star,
                     n
                 );
                 for (ky_size_t feat_j = 0; feat_j < n_tilde; ++feat_j) {
@@ -731,7 +735,7 @@ inline void grouping(
         //group_t group0;
         //auto result0 = calculate_group(keys, hst_pair_lens,
         //    dev_keys, dev_pair_lens, &group0,
-        //    0, 2735155, 14, pt, et, 1,
+        //    0, 2735155, 14, pt, et,
         //    &cusolverH, &cusolverP, &cublasH, false);
 
         // while batch is sufficent
@@ -774,7 +778,7 @@ inline void grouping(
                 do {
                     result = calculate_group(keys, hst_pair_lens,
                         dev_keys, dev_pair_lens, &group,
-                        processed, start_i, end_i - start_i, pt, et, step,
+                        processed, start_i, end_i - start_i, pt, et,
                         &cusolverH, &cusolverP, &cublasH, false);
                     if (result == out_of_memory) {
                         ++step;
@@ -800,7 +804,7 @@ inline void grouping(
                 }
                 result = calculate_group(keys, hst_pair_lens,
                     dev_keys, dev_pair_lens, &group,
-                    processed, start_i, end_i - start_i, pt, et, step,
+                    processed, start_i, end_i - start_i, pt, et,
                     &cusolverH, &cusolverP, &cublasH, force);
 
                 assert(result != out_of_memory);
@@ -842,7 +846,7 @@ inline void grouping(
     ix_size_t step = 1;
     GroupStatus result = calculate_group(keys, hst_pair_lens,
         dev_keys, dev_pair_lens, &group,
-        processed, start_i, num_keys - processed - start_i, pt, et, step,
+        processed, start_i, num_keys - processed - start_i, pt, et,
         &cusolverH, &cusolverP, &cublasH, true);
     group.fsteps = 1;
     group.bsteps = 0;

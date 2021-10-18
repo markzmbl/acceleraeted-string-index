@@ -66,7 +66,7 @@ __global__ void pair_prefix_kernel(
 
 __global__ void rmq_kernel(
         const ky_size_t* dev_pair_lens, const ix_size_t start_i, const ix_size_t m_star,
-        int_t* dev_min_len, int_t* dev_max_len, ix_size_t step) {
+        int_t* dev_min_len, int_t* dev_max_len, fp_t step) {
     
     dev_pair_lens += start_i;
     const ix_size_t thid = blockDim.x * blockIdx.x + threadIdx.x;
@@ -77,12 +77,12 @@ __global__ void rmq_kernel(
     ky_size_t loc_max_len = 0;
   
     __syncthreads();
-
     // iterate batch in strides
     for (ix_size_t thid_i = thid; thid_i < m_star; thid_i += gridDim.x * blockDim.x) {
 
-        loc_min_len = *(dev_pair_lens + ((ix_size_t) (thid_i * step));
-        loc_max_len = *(dev_pair_lens + ((ix_size_t) (thid_i * step));
+
+        loc_min_len = *(dev_pair_lens + ((ix_size_t) (thid_i * step)));
+        loc_max_len = *(dev_pair_lens + ((ix_size_t) (thid_i * step)));
 
         // reduce each warp
         for (uint8_t offset = 1; offset < 32; offset *= 2) {
@@ -149,24 +149,27 @@ __global__ void rmq_kernel(
 
 __global__ void column_major_kernel(
         const ky_t* keys, fp_t* A,
-        const ix_size_t start_i, const ix_size_t m,
-        const ky_size_t* feat_indices, const ky_size_t n_tilde) {
+        const ix_size_t start_i, const ix_size_t m_star,
+        const ky_size_t* feat_indices, const ky_size_t n_tilde,
+        const fp_t step) {
 
     const ix_size_t thid = blockDim.x * blockIdx.x + threadIdx.x;
     // move pointer to group start
     keys += start_i;
 
-    for (ix_size_t thid_i = thid; thid_i < m * n_tilde; thid_i += gridDim.x * blockDim.x) {
+    for (ix_size_t thid_i = thid; thid_i < m_star * n_tilde; thid_i += gridDim.x * blockDim.x) {
 
         ix_size_t key_i =  thid_i / n_tilde;
         ky_size_t feat_i = (thid_i % n_tilde);
         ky_size_t char_i;
+        
+        //if(!feat_i) printf("key_i %u, step %f, key: %u\n",(uint8_t) (key_i), (float) step,(uint32_t) (key_i * step));
 
         if (feat_i < n_tilde - 1) {
             char_i = *(feat_indices + feat_i);
-            *(A + feat_i * m + key_i) = (fp_t) *(((ch_t*) *(keys + key_i)) + char_i);
+            *(A + feat_i * m_star + key_i) = (fp_t) *(((ch_t*) *(keys + ((ix_size_t) (key_i * step)))) + char_i);
         } else {
-            *(A + feat_i * m + key_i) = bias;
+            *(A + feat_i * m_star + key_i) = bias;
         }
         
         //if (thid_i < n)
@@ -181,12 +184,13 @@ __global__ void column_major_kernel(
 }
 
 __global__ void set_postition_kernel(
-        fp_t* B, ix_size_t processed, ix_size_t start_i, ix_size_t m) {
+        fp_t* B, ix_size_t processed, ix_size_t start_i,
+        ix_size_t m_star, fp_t step) {
 
     const ix_size_t thid = blockDim.x * blockIdx.x + threadIdx.x;
-    for (ix_size_t thid_i = thid; thid_i < m; thid_i += gridDim.x * blockDim.x) {
+    for (ix_size_t thid_i = thid; thid_i < m_star; thid_i += gridDim.x * blockDim.x) {
 
-        *(B + thid_i) = processed + start_i + thid_i;
+        *(B + thid_i) = processed + start_i + ((ix_size_t) (thid_i * step));
 
     }
 }
@@ -278,15 +282,15 @@ __global__ void equal_column_kernel_old(
 
 __global__ void equal_column_kernel(
         ky_t* keys, ix_size_t start_i, ky_size_t feat_start,
-        ix_size_t m, ky_size_t n_star,
-        int_t* uneqs, ch_t* col_vals, int_t* mutexes) {
+        ix_size_t m_star, ky_size_t n_star,
+        int_t* uneqs, ch_t* col_vals, int_t* mutexes, fp_t step) {
 
     keys += start_i;
     const ix_size_t thid = blockDim.x * blockIdx.x + threadIdx.x;
 
     if (thid < n_star) {
-        for (ix_size_t key_i = 0; key_i < m - 1; ++key_i) {
-            if (*(((ch_t*) *(keys + key_i)) + feat_start + thid) != *(((ch_t*) *(keys + key_i + 1)) + feat_start + thid)) {
+        for (ix_size_t key_i = 0; key_i < m_star - 1; ++key_i) {
+            if (*(((ch_t*) *(keys + ((ix_size_t) (key_i * step)))) + feat_start + thid) != *(((ch_t*) *(keys + ((ix_size_t) ((key_i + 1) * step)))) + feat_start + thid)) {
                 *(uneqs + thid) = 1;
                 break;
             }

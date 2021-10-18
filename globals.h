@@ -70,7 +70,7 @@ enum QueryStatus {found_target, left_of_target, right_of_target};
 // debug flag
 bool verbose = true;
 const bool debug = false;
-const bool sanity_check = false;
+const bool sanity_check = true;
 
 // gpu specific types
 typedef double fp_t;
@@ -141,7 +141,7 @@ const float LOADFACTOR = 0.12;
 //const ix_size_t BATCHLEN = safe_division(VRAM * LOADFACTOR, KEYSIZE);
 const ix_size_t BATCHLEN = 60'000'000;
 const ix_size_t QUERYSIZE = 2 * CUDACORES;
-const ix_size_t MAXSAMPLES = 4'000;
+const ix_size_t MAXSAMPLES = 100'000;
 
 const char FILENAME[] = "./gene/gene200.txt";
 

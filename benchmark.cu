@@ -37,14 +37,14 @@ int main() {
     // parameters
     const fp_t et = 32;
     const ix_size_t pt = 16;
-    const ix_size_t fstep = 60'000'000;
+    const ix_size_t fstep = 1'000'000;
     const ix_size_t bstep = 10'000;
     const ix_size_t min_size = CUDACORES;
 
     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
     // group meta data   
     std::vector<group_t> groups;
-    grouping(keys, NUMKEYS, et, pt, fstep, bstep, min_size, groups);
+    grouping(keys, NUMKEYS, et, pt, fstep, bstep, groups);
     ix_size_t group_n = groups.size();
     ky_t* pivots = (ky_t*) malloc(group_n * sizeof(ky_t));
     
@@ -69,7 +69,7 @@ int main() {
     std::vector<group_t> roots;
     ix_size_t root_n;
     if (group_n > min_size) {
-        grouping(pivots, group_n, et, pt, fstep, bstep, min_size, roots);
+        grouping(pivots, group_n, et, pt, fstep, bstep, roots);
     }
     root_n = roots.size();
 
