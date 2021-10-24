@@ -44,20 +44,20 @@ __global__ void pair_prefix_kernel(
     for (ix_size_t thid_i = thid; thid_i < batch_len - 1; thid_i += gridDim.x * blockDim.x) {
         ky_t* key1 = (ky_t*) keys + thid_i;
         ky_t* key2 = (ky_t*) keys + thid_i + 1;
+        ky_size_t prefix_len = ky_size_max;
         for (ky_size_t char_i = 0; char_i < KEYLEN; ++char_i) {
             
             ch_t char1 = *(((ch_t*) key1) + char_i);
             ch_t char2 = *(((ch_t*) key2) + char_i);
+
+
             //printf("[pair_prefix_kernel] c1: %c c2: %c\n", char1, char2);
             if (char1 != char2) {
-                *(dev_pair_lens + thid_i) = char_i;
-//                if (debug == true) {
-//                    //printf("[pair_prefix_kernel] thid_i: %'d, key1: %s, key2: %s, prefixlen: %'d\n", (uint16_t) thid_i, key1, key2, char_i);
-//                    printf("[pair_prefix_kernel] thid_i: %'d, prefixlen: %'d\n", (uint16_t) thid_i, char_i);
-//                }
+                prefix_len = char_i;
                 break;
             }
         }
+        *(dev_pair_lens + thid_i) = prefix_len;
     }        
 }
 
@@ -80,9 +80,10 @@ __global__ void rmq_kernel(
     // iterate batch in strides
     for (ix_size_t thid_i = thid; thid_i < m_star; thid_i += gridDim.x * blockDim.x) {
 
-
-        loc_min_len = *(dev_pair_lens + ((ix_size_t) (thid_i * step)));
-        loc_max_len = *(dev_pair_lens + ((ix_size_t) (thid_i * step)));
+        ky_size_t len = *(dev_pair_lens + ((ix_size_t) (thid_i * step)));
+        if (len != ky_size_max) {
+            loc_min_len = loc_max_len = len;
+        }
 
         // reduce each warp
         for (uint8_t offset = 1; offset < 32; offset *= 2) {
@@ -93,7 +94,7 @@ __global__ void rmq_kernel(
             if (threadIdx.x % (offset * 2) == 0 && thid_i + offset < m_star && threadIdx.x % 32 + offset < 32) {
                 
                 // min
-                if (tmp_min_len < loc_min_len) {
+                if (tmp_min_len < loc_min_len ) {
                     loc_min_len = tmp_min_len;
                 }
                 // max
@@ -333,8 +334,9 @@ __global__ void model_error_kernel(
         //printf("thid_i: %'d, err: %f\n", (uint16_t)thid_i, loc_acc_err);
         
         // declare min an max variable
-        fp_t loc_min_err = loc_acc_err;
-        fp_t loc_max_err = loc_acc_err;
+        fp_t loc_min_err;
+        fp_t loc_max_err;
+        loc_min_err = loc_max_err = loc_acc_err;
 
         // begin warp shuffle
         for (uint8_t offset = 1; offset < 32; offset *= 2) {
@@ -360,7 +362,7 @@ __global__ void model_error_kernel(
         // declare shared memory for block wide communication
         extern __shared__ fp_t shrd_mmry3[];
         fp_t* blk_acc_errs = shrd_mmry3;
-        fp_t* blk_min_errs = blk_acc_errs + (blockDim.x / 32);
+        fp_t* blk_min_errs = (blk_acc_errs + (blockDim.x / 32));
         fp_t* blk_max_errs = blk_min_errs + (blockDim.x / 32);
         
         ix_size_t shrd_mmry_i;
@@ -437,6 +439,26 @@ __global__ void query_kernel(
         ix_size_t ref_pos = thid_i;
 
         const ky_t* pivot = keys + thid_i;
+
+        printf("%u: %c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c\n",(uint16_t) thid,
+            *(((ch_t*) pivot) + 0),
+            *(((ch_t*) pivot) + 1),
+            *(((ch_t*) pivot) + 2),
+            *(((ch_t*) pivot) + 3),
+            *(((ch_t*) pivot) + 4),
+            *(((ch_t*) pivot) + 5),
+            *(((ch_t*) pivot) + 6),
+            *(((ch_t*) pivot) + 7),
+            *(((ch_t*) pivot) + 8),
+            *(((ch_t*) pivot) + 9),
+            *(((ch_t*) pivot) + 10),
+            *(((ch_t*) pivot) + 11),
+            *(((ch_t*) pivot) + 12),
+            *(((ch_t*) pivot) + 13),
+            *(((ch_t*) pivot) + 14),
+            *(((ch_t*) pivot) + 15)
+        );
+
         for (ky_size_t char_i = 0; char_i < sizeof(ky_t); ++char_i) {
             ch_t query_char = *(((ch_t*) *query) + char_i);
             ch_t key_char = *(((ch_t*) pivot) + char_i);
@@ -457,7 +479,8 @@ __global__ void query_kernel(
                 }
             }
         }
-        printf("thread:\tthid_i: %u -> %i\n", (uint16_t) thid_i, (int16_t) loc_pos);
+
+        printf("thread:\tthid_i: %u -> %u\n", (uint16_t) thid_i, (int16_t) loc_pos);
 
         // declare shared memory for block wide communication
         extern __shared__ int_t shrd_mmry4[];
@@ -468,7 +491,7 @@ __global__ void query_kernel(
 
         // write into shared memory
         if (threadIdx.x % 32 == 0) {
-            printf("warp:\tthid_i: %u -> %i\n", (uint16_t) thid_i, (int16_t) loc_pos);
+            printf("warp:\tthid_i: %u -> %u\n", (uint16_t) thid_i, (int16_t) loc_pos);
             shrd_mmry_i = threadIdx.x / 32;
             *(blk_pos + shrd_mmry_i) = loc_pos;
         }
@@ -491,7 +514,7 @@ __global__ void query_kernel(
         }
         // begin block reduction
         if (threadIdx.x == 0) {
-            //printf("block:\tthid_i: %u -> %i\n", (uint16_t) thid_i, (int16_t) *blk_pos);
+            printf("block:\tthid_i: %u -> %u\n", (uint16_t) thid_i, (int16_t) *blk_pos);
             // min
             if (*blk_pos < int_max) {
                 if (*blk_pos != ref_pos) {

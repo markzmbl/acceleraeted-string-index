@@ -63,14 +63,14 @@ int get_block_size(cudaDeviceProp prop, int cudacores) {
 
 
 // return enum
-enum GroupStatus {success, threshold_exceed, out_of_memory, batch_end_reached};
-enum QueryStatus {found_target, left_of_target, right_of_target};
+enum GroupStatus {threshold_success, threshold_exceed, out_of_memory, batch_exceed, finished};
+enum QueryStatus {found_target, target_right, target_left};
 
 
 // debug flag
 bool verbose = true;
-const bool debug = false;
-const bool sanity_check = true;
+const bool debug = true;
+const bool sanity_check = false;
 
 // gpu specific types
 typedef double fp_t;
@@ -124,7 +124,7 @@ struct index_t {
     group_t* roots;
     ix_size_t group_n;
     group_t* groups;
-    ky_t* dev_group_pivots;
+    ky_t* pivots;
 };
 
 
@@ -139,11 +139,12 @@ const ix_size_t BLOCKNUM = (ix_size_t) (CUDACORES / BLOCKSIZE);
 const ix_size_t VRAM = prop.totalGlobalMem;
 const float LOADFACTOR = 0.12;
 //const ix_size_t BATCHLEN = safe_division(VRAM * LOADFACTOR, KEYSIZE);
-const ix_size_t BATCHLEN = 60'000'000;
+const ix_size_t BATCHLEN = 200'000'000;
+ix_size_t MINSIZE = 1'000'000;
 const ix_size_t QUERYSIZE = 2 * CUDACORES;
-const ix_size_t MAXSAMPLES = 100'000;
+const ix_size_t MAXSAMPLES = 40'000'000;
 
-const char FILENAME[] = "./gene/gene200.txt";
+const char FILENAME[] = "./gene/gene200normal.txt";
 
 // create handles and params
 // create handles

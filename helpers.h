@@ -133,17 +133,19 @@ inline int8_t compare_keys(const ky_t &key0, const ky_t &key1) {
 }
 
 inline void swap_buffer_and_stream(
-        ky_t* buffer0, cudaStream_t* stream0,
-        ky_t* buffer1, cudaStream_t* stream1) {
+        ky_t** buffer0, cudaStream_t** stream0,
+        ky_t** buffer1, cudaStream_t** stream1) {
 
-    ky_t* tmp_buffer = buffer0;
-    cudaStream_t* tmp_stream = stream0;
-    buffer0 = buffer1;
-    stream0 = stream1;
-    buffer1 = tmp_buffer;
-    stream1 = tmp_stream;
+    ky_t* tmp_buffer = *buffer0;
+    cudaStream_t* tmp_stream = *stream0;
+    *buffer0 = *buffer1;
+    *stream0 = *stream1;
+    *buffer1 = tmp_buffer;
+    *stream1 = tmp_stream;
 
 }
+
+
 
 
 #endif  // _HELPERS_
