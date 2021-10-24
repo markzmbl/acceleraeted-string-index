@@ -145,7 +145,60 @@ inline void swap_buffer_and_stream(
 
 }
 
+inline bool serialize(index_t &index, char[] filename) {
+    FILE* file;
+    file = fopen(filename,"wb");
+    //size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream)
+    fwrite(&(index.root_n), 1, sizeof(ix_size_t), file);
+    fwrite(&(index.roots), 1, sizeof(group_t*), file);
+    fwrite(&(index.group_n), 1, sizeof(ix_size_t), file);
+    fwrite(&(index.groups), 1, sizeof(group_t*), file);
+    fwrite(&(index.pivots), 1, sizeof(ky_t*), file);
 
+    for (ix_size_t group_i = 0; group_i < index.group_n; ++group_i) {
+        group_t* group = index.groups + group_i;
+        fwrite(&(group->pivot), 1, sizeof(ky_t), file);
+        fwrite(&(group->start), 1, sizeof(ix_size_t), file);
+        fwrite(&(group->m), 1, sizeof(ix_size_t), file);
+        fwrite(&(group->n), 1, sizeof(ky_size_t), file);
+        fwrite(group->feat_indices, group->n, sizeof(ky_size_t), file);
+        fwrite(group->weights, group->n, sizeof(fp_t), file);
+        fwrite(&(group->avg_err), 1, sizeof(fp_t), file);
+        fwrite(&(group->min_err), 1, sizeof(fp_t), file);
+        fwrite(&(group->max_err), 1, sizeof(fp_t), file);
+        fwrite(&(group->fsteps), 1, sizeof(unsigned int), file);
+        fwrite(&(group->bsteps), 1, sizeof(unsigned int), file);
+   }
+}
+
+inline index_t deserialize(char[] filename) {
+    FILE* file;
+    file = fopen(filename,"rb");
+    index_t index = { 0 };
+    //size_t fread(void *ptr, size_t size, size_t nmemb, FILE *stream)
+    fread(&(index.root_n), 1, sizeof(ix_size_t), file);
+    fread(&(index.roots), 1, sizeof(group_t*), file);
+    fread(&(index.group_n), 1, sizeof(ix_size_t), file);
+    fread(&(index.groups), 1, sizeof(group_t*), file);
+    fread(&(index.pivots), 1, sizeof(ky_t*), file);
+
+    for (ix_size_t group_i = 0; group_i < index.group_n; ++group_i) {
+        group_t group = { 0 };
+        fread(&(group.pivot), 1, sizeof(ky_t), file);
+        fread(&(group.start), 1, sizeof(ix_size_t), file);
+        fread(&(group.m), 1, sizeof(ix_size_t), file);
+        fread(&(group.n), 1, sizeof(ky_size_t), file);
+        group.feat_indices = malloc(group.n * sizeof(ky_size_t));
+        fread(group.feat_indices, group.n, sizeof(ky_size_t), file);
+        group.feat_indices = malloc(group.n * sizeof(fp_t));
+        fread(group.weights, group.n, sizeof(fp_t), file);
+        fread(&(group.avg_err), 1, sizeof(fp_t), file);
+        fread(&(group.min_err), 1, sizeof(fp_t), file);
+        fread(&(group.max_err), 1, sizeof(fp_t), file);
+        fread(&(group.fsteps), 1, sizeof(unsigned int), file);
+        fread(&(group.bsteps), 1, sizeof(unsigned int), file);
+   }
+}
 
 
 #endif  // _HELPERS_
