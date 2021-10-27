@@ -867,13 +867,13 @@ inline ix_size_t query_range(
 
         // evaluate result
         if (hst_pos != int_max) {
-            if (hst_inblk == true) {    
-                if (memcmp(&key, keys + mid + hst_pos, sizeof(ky_t)) < 0) {
-                    --hst_pos;
-                }             
+            if (memcmp(&key, keys + mid + hst_pos, sizeof(ky_t)) == 0) {
                 result = found_target;
                 return mid + hst_pos;
-            } else if (memcmp(&key, keys + mid + hst_pos, sizeof(ky_t)) == 0) {
+            } else if (hst_inblk == true) {
+                if (memcmp(&key, keys + mid + hst_pos, sizeof(ky_t)) < 0) {
+                    --hst_pos;
+                }
                 result = found_target;
                 return mid + hst_pos;
             } else {
@@ -1027,12 +1027,13 @@ inline ix_size_t get_position(
         auto tmp = (prediction - group->left_err);
         query_start = (ix_size_t) (prediction - group->left_err);
     }
-    if ((int64_t) (prediction + group->right_err + 0.5) < (int64_t) group->start || prediction + group->right_err + 0.5 < 0) {
+    if ((int64_t) ceil(prediction + group->right_err + 0.5) < (int64_t) group->start || prediction + group->right_err + 0.5 < 0) {
         return group->start;
-    } else if ((int64_t) (prediction + group->right_err + 0.5) > (int64_t) (group->start + group->m)) {
+    } else if ((int64_t) ceil(prediction + group->right_err + 0.5) > (int64_t) (group->start + group->m)) {
         query_end = group->start + group->m;
     } else {
-        query_end = prediction + group->right_err + 0.5;
+        auto tmp = ceil(prediction + group->right_err + 0.5);
+        query_end = ceil(prediction + group->right_err + 0.5);
     }
 
     if (prediction < group->start) {

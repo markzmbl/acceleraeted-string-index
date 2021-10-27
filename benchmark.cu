@@ -78,6 +78,7 @@ int main() {
         if (tmp >= NUMKEYS || i != tmp && (memcmp(key, keys + tmp, sizeof(ky_t)) != 0)) {
             get_position(index2, *key, keys);
         }
+        printf("%u\n", i);
     }
 
 
