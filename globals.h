@@ -103,7 +103,6 @@ const ky_size_t KEYSIZE = KEYLEN * sizeof(ch_t);
 typedef ch_t ky_t[KEYLEN];
 // group type
 struct group_t {
-    ky_t pivot;
     ix_size_t start;
     ix_size_t m;
     ky_size_t n;
@@ -112,8 +111,8 @@ struct group_t {
     ky_size_t* dev_feat_indices;
     fp_t* dev_weights;
     fp_t avg_err;
-    fp_t min_err;
-    fp_t max_err;
+    fp_t left_err;
+    fp_t right_err;
     unsigned int fsteps;
     unsigned int bsteps;
 };

@@ -600,8 +600,8 @@ inline GroupStatus calculate_group(
     }
 
     // copy final weights
-    assert(cudaMallocHost(&weights, B.size()) == cudaSuccess);
-    assert(cudaMemcpy(weights, B.ptr(), B.size(), cudaMemcpyDeviceToHost) == cudaSuccess);
+    assert(cudaMallocHost(&weights, n_tilde * sizeof(fp_t)) == cudaSuccess);
+    assert(cudaMemcpy(weights, B.ptr(), n_tilde * sizeof(fp_t), cudaMemcpyDeviceToHost) == cudaSuccess);
 
     // free B
     assert(B.free() == true);
@@ -609,14 +609,13 @@ inline GroupStatus calculate_group(
 
     // fill in group
     group->start        = processed + start_i;
-    strncpy(group->pivot, *(hst_keys + group->start), sizeof(ky_t));
     group->m            = m;
     group->n            = n;
     group->feat_indices = host_feat_indices;
     group->weights      = weights;
     group->avg_err      = avg_error;
-    group->min_err      = host_min_error;    
-    group->max_err      = host_max_error;
+    group->left_err     = abs(host_max_error);    
+    group->right_err    = abs(host_min_error);
 
     // exit successfully
     return threshold_success;
@@ -793,6 +792,8 @@ inline void grouping(
                 }
                 groups.push_back(group);
 
+
+
                 start_i = end_i;
             }
 
@@ -826,7 +827,7 @@ inline void grouping(
     assert(cublasDestroy(cublasH) == cudaSuccess);
 }
 
-inline bool query_range(
+inline ix_size_t query_range(
         ky_t* dev_key, ky_t &key, ky_t* keys,
         ix_size_t query_start, ix_size_t query_end,
         ix_size_t left, ix_size_t mid, ix_size_t right,
@@ -850,6 +851,11 @@ inline bool query_range(
         assert(cudaMemcpy(dev_pos, &int_max, sizeof(int_t), cudaMemcpyHostToDevice) == cudaSuccess);
         assert(cudaMemset(dev_inblk, false, sizeof(bool)) == cudaSuccess);
         // run kernel for mid buffer in the mean time
+        if (right != ix_max) {
+            querysize = (right - mid < QUERYSIZE) ? right - mid : QUERYSIZE;
+        } else {
+            querysize = (query_end - mid < QUERYSIZE) ? query_end - mid : QUERYSIZE;
+        }
         query_kernel
             <<<get_block_num(querysize), BLOCKSIZE, BLOCKSIZE / 32 * sizeof(int_t), *stream_mid>>>
             (dev_key, buffer_mid, querysize, dev_pos, dev_inblk);
@@ -858,11 +864,18 @@ inline bool query_range(
         assert(cudaMemcpy(&hst_pos, dev_pos, sizeof(int_t), cudaMemcpyDeviceToHost) == cudaSuccess);
         assert(cudaMemcpy(&hst_inblk, dev_inblk, sizeof(bool), cudaMemcpyDeviceToHost) == cudaSuccess);
 
+
         // evaluate result
         if (hst_pos != int_max) {
-            if (hst_inblk == true || mid == query_start ||
-                    memcmp(key, keys + hst_pos, sizeof(ky_t)) == 0) {
+            if (hst_inblk == true) {    
+                if (memcmp(&key, keys + mid + hst_pos, sizeof(ky_t)) < 0) {
+                    --hst_pos;
+                }             
                 result = found_target;
+                return mid + hst_pos;
+            } else if (memcmp(&key, keys + mid + hst_pos, sizeof(ky_t)) == 0) {
+                result = found_target;
+                return mid + hst_pos;
             } else {
                 result = target_left;
             }
@@ -874,7 +887,7 @@ inline bool query_range(
             switch (result) {
                 case target_left:
                     swap_buffer_and_stream(&buffer_mid, &stream_mid, &buffer_left, &stream_left);
-                    query_end = mid - 1;
+                    query_end = mid;
                     mid = left;
                     break;
                 
@@ -914,7 +927,7 @@ inline bool query_range(
 }
 
 inline ix_size_t get_position(
-        const index_t* index, ky_t &key, ky_t* keys, ky_t* pivots) {
+        const index_t* index, ky_t &key, ky_t* keys) {
     
     ky_t* dev_key;
     int_t hst_pos = int_max;
@@ -977,7 +990,7 @@ inline ix_size_t get_position(
             querysize = (query_end - mid < QUERYSIZE) ? query_end - mid : QUERYSIZE;
         }
         assert(cudaMemcpyAsync(buffer_mid, ((ky_t*) index->pivots) + mid, querysize * sizeof(ky_t), cudaMemcpyHostToDevice, stream_mid) == cudaSuccess);
-        query_range(
+        hst_pos = query_range(
             dev_key, key, index->pivots,
             query_start, query_end,
             left, mid, right,
@@ -1000,24 +1013,26 @@ inline ix_size_t get_position(
         } else {
             ky_size_t char_i = *(group->feat_indices + feat_i);
             ch_t character = *(((ch_t*) key) + char_i);
-            prediction += *(group->weights + feat_i) * ((fp_t) character);
+            fp_t weight = *(group->weights + feat_i);
+            prediction += weight * ((fp_t) character);
         }
     }
 
     // shift query borders
-    if ((ix_size_t) prediction + group->min_err < group->start || prediction + group->min_err < 0) {
+    if ((int64_t) (prediction - group->left_err) < (int64_t) group->start || prediction - group->left_err < 0) {
         query_start = group->start;
-    } else if ((ix_size_t) prediction + group->min_err > group->start + group->m) {
+    } else if ((int64_t) (prediction - group->left_err) > (int64_t) (group->start + group->m)) {
         return group->start + group->m - 1;
     } else {
-        query_start = (ix_size_t) (prediction + group->min_err);
+        auto tmp = (prediction - group->left_err);
+        query_start = (ix_size_t) (prediction - group->left_err);
     }
-    if ((ix_size_t) prediction + group->max_err + 0.5 < group->start || prediction + group->max_err + 0.5 < 0) {
+    if ((int64_t) (prediction + group->right_err + 0.5) < (int64_t) group->start || prediction + group->right_err + 0.5 < 0) {
         return group->start;
-    } else if ((ix_size_t) prediction + group->max_err + 0.5 > group->start + group->m) {
+    } else if ((int64_t) (prediction + group->right_err + 0.5) > (int64_t) (group->start + group->m)) {
         query_end = group->start + group->m;
     } else {
-        query_end = (ix_size_t) (prediction + group->max_err + 0.5);
+        query_end = prediction + group->right_err + 0.5;
     }
 
     if (prediction < group->start) {
@@ -1031,6 +1046,7 @@ inline ix_size_t get_position(
     if (query_end - query_start <= QUERYSIZE) {
         left = ix_max;
         right = ix_max;
+        mid = query_start;
     } else if (query_end - query_start <= 2 * QUERYSIZE) {
         if (prediction < query_start + QUERYSIZE) {
             left = ix_max;
@@ -1052,8 +1068,10 @@ inline ix_size_t get_position(
             left = (mid + query_start - QUERYSIZE) / 2;
         } else {
             mid = (ix_size_t) (prediction - QUERYSIZE / 2);
-            left = (mid + query_start - QUERYSIZE) / 2;
-            right = (query_end + mid + QUERYSIZE) / 2;
+            querysize = (mid - query_start < QUERYSIZE) ? mid - query_start : QUERYSIZE;
+            left = (mid + query_start - querysize) / 2;
+            querysize = (query_end - mid < QUERYSIZE) ? query_end - mid : QUERYSIZE;
+            right = (query_end + mid + querysize) / 2;
         }
     }
 
@@ -1062,11 +1080,11 @@ inline ix_size_t get_position(
     if (right != ix_max) {
         querysize = (right - mid < QUERYSIZE) ? right - mid : QUERYSIZE;
     } else {
-        querysize = (query_end - mid < QUERYSIZE) ? right - mid : QUERYSIZE;
+        querysize = (query_end - mid < QUERYSIZE) ? query_end - mid : QUERYSIZE;
     }
     assert(cudaMemcpyAsync(buffer_mid, keys + mid, querysize * sizeof(ky_t), cudaMemcpyHostToDevice, stream_mid) == cudaSuccess);
 
-    query_range(
+    hst_pos = query_range(
         dev_key, key, keys,
         query_start, query_end,
         left, mid, right,

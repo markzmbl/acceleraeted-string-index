@@ -325,7 +325,6 @@ __global__ void model_error_kernel(
                 loc_acc_err += *(B + feat_i);
             }
         }
-        
         // subtract actual position (key error)
         loc_acc_err -= (processed + start_i + thid_i);
 
@@ -440,24 +439,6 @@ __global__ void query_kernel(
 
         const ky_t* pivot = keys + thid_i;
 
-        printf("%u: %c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c\n",(uint16_t) thid,
-            *(((ch_t*) pivot) + 0),
-            *(((ch_t*) pivot) + 1),
-            *(((ch_t*) pivot) + 2),
-            *(((ch_t*) pivot) + 3),
-            *(((ch_t*) pivot) + 4),
-            *(((ch_t*) pivot) + 5),
-            *(((ch_t*) pivot) + 6),
-            *(((ch_t*) pivot) + 7),
-            *(((ch_t*) pivot) + 8),
-            *(((ch_t*) pivot) + 9),
-            *(((ch_t*) pivot) + 10),
-            *(((ch_t*) pivot) + 11),
-            *(((ch_t*) pivot) + 12),
-            *(((ch_t*) pivot) + 13),
-            *(((ch_t*) pivot) + 14),
-            *(((ch_t*) pivot) + 15)
-        );
 
         for (ky_size_t char_i = 0; char_i < sizeof(ky_t); ++char_i) {
             ch_t query_char = *(((ch_t*) *query) + char_i);
@@ -480,7 +461,7 @@ __global__ void query_kernel(
             }
         }
 
-        printf("thread:\tthid_i: %u -> %u\n", (uint16_t) thid_i, (int16_t) loc_pos);
+        //printf("thread:\tthid_i: %u -> %u\n", (uint16_t) thid_i, (int16_t) loc_pos);
 
         // declare shared memory for block wide communication
         extern __shared__ int_t shrd_mmry4[];
@@ -491,7 +472,7 @@ __global__ void query_kernel(
 
         // write into shared memory
         if (threadIdx.x % 32 == 0) {
-            printf("warp:\tthid_i: %u -> %u\n", (uint16_t) thid_i, (int16_t) loc_pos);
+            //printf("warp:\tthid_i: %u -> %u\n", (uint16_t) thid_i, (int16_t) loc_pos);
             shrd_mmry_i = threadIdx.x / 32;
             *(blk_pos + shrd_mmry_i) = loc_pos;
         }
@@ -514,7 +495,7 @@ __global__ void query_kernel(
         }
         // begin block reduction
         if (threadIdx.x == 0) {
-            printf("block:\tthid_i: %u -> %u\n", (uint16_t) thid_i, (int16_t) *blk_pos);
+            //printf("block:\tthid_i: %u -> %u\n", (uint16_t) thid_i, (int16_t) *blk_pos);
             // min
             if (*blk_pos < int_max) {
                 if (*blk_pos != ref_pos) {
