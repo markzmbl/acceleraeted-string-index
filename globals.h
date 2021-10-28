@@ -123,7 +123,8 @@ struct index_t {
     group_t* roots;
     ix_size_t group_n;
     group_t* groups;
-    ky_t* pivots;
+    ky_t* root_pivots;
+    ky_t* group_pivots;
 };
 
 

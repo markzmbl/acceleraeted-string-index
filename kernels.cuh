@@ -284,7 +284,7 @@ __global__ void equal_column_kernel_old(
 __global__ void equal_column_kernel(
         ky_t* keys, ix_size_t start_i, ky_size_t feat_start,
         ix_size_t m_star, ky_size_t n_star,
-        int_t* uneqs, ch_t* col_vals, int_t* mutexes, fp_t step) {
+        int_t* uneqs, fp_t step) {
 
     keys += start_i;
     const ix_size_t thid = blockDim.x * blockIdx.x + threadIdx.x;
@@ -325,9 +325,12 @@ __global__ void model_error_kernel(
                 loc_acc_err += *(B + feat_i);
             }
         }
+        //if (thid_i == 9966) printf("%f\n", loc_acc_err);
+
         // subtract actual position (key error)
         loc_acc_err -= (processed + start_i + thid_i);
 
+        //if (thid_i == 9966) printf("%f\n", loc_acc_err);
         //printf("key_i: %'d, key_err: %f\n", (uint16_t)thid_i, loc_acc_err);
 
         //printf("thid_i: %'d, err: %f\n", (uint16_t)thid_i, loc_acc_err);
@@ -429,7 +432,7 @@ __global__ void model_error_kernel(
 
 __global__ void query_kernel(
     const ky_t* query, const ky_t* keys, const ix_size_t range,
-    int_t* dev_pos, bool* in_block) {
+    int_t* dev_pos) {
     
     const ix_size_t thid = blockDim.x * blockIdx.x + threadIdx.x;
     for (ix_size_t thid_i = thid; thid_i < range; thid_i += gridDim.x * blockDim.x) {
@@ -450,6 +453,7 @@ __global__ void query_kernel(
                 break;
             }
         }
+        //printf("thread:\tthid_i: %u -> %u\n", (uint16_t) thid_i, (int16_t) loc_pos);
         // begin warp shuffle
         for (uint8_t offset = 1; offset < 32; offset *= 2) {
             int_t tmp_pos = __shfl_down_sync(0xFFFFFFFF, loc_pos, offset);
@@ -461,7 +465,6 @@ __global__ void query_kernel(
             }
         }
 
-        //printf("thread:\tthid_i: %u -> %u\n", (uint16_t) thid_i, (int16_t) loc_pos);
 
         // declare shared memory for block wide communication
         extern __shared__ int_t shrd_mmry4[];
@@ -499,7 +502,6 @@ __global__ void query_kernel(
             // min
             if (*blk_pos < int_max) {
                 if (*blk_pos != ref_pos) {
-                    *in_block = true;
                     *dev_pos = *blk_pos;
                 } else {
                     atomicMin(dev_pos, (int_t) *blk_pos);

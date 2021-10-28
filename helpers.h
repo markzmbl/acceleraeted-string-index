@@ -4,6 +4,8 @@
 #include <vector>
 #include <algorithm>
 #include <string>
+#include <assert.h>
+
 
 
 #ifndef _HELPERS_
@@ -150,7 +152,9 @@ inline bool serialize(index_t &index, char filename[]) {
     file = fopen(filename,"wb");
     fwrite(&(index.root_n), sizeof(ix_size_t), 1, file);
     fwrite(&(index.group_n), sizeof(ix_size_t), 1, file);
-    fwrite(index.pivots, sizeof(ky_t), index.group_n, file);
+    fwrite(index.root_pivots, sizeof(ky_t), index.root_n, file);
+    fwrite(index.group_pivots, sizeof(ky_t), index.group_n, file);
+
 
     for (ix_size_t group_i = 0; group_i < index.root_n + index.group_n; ++group_i) {
         group_t* group;
@@ -172,7 +176,6 @@ inline bool serialize(index_t &index, char filename[]) {
    }
 }
 
-
 inline index_t* deserialize(char filename[]) {
     FILE* file;
     file = fopen(filename,"rb");
@@ -183,8 +186,11 @@ inline index_t* deserialize(char filename[]) {
     index->roots = (group_t*) malloc(index->root_n * sizeof(group_t));
     index->groups = (group_t*) malloc(index->group_n * sizeof(group_t));
 
-    index->pivots = (ky_t*) malloc(index->group_n * sizeof(ky_t));
-    fread(index->pivots, sizeof(ky_t), index->group_n, file);
+    index->root_pivots = (ky_t*) malloc(index->root_n * sizeof(ky_t));
+    fread(index->root_pivots, sizeof(ky_t), index->root_n, file);
+
+    index->group_pivots = (ky_t*) malloc(index->group_n * sizeof(ky_t));
+    fread(index->group_pivots, sizeof(ky_t), index->group_n, file);
 
 
     for (ix_size_t group_i = 0; group_i < index->group_n; ++group_i) {
@@ -210,6 +216,39 @@ inline index_t* deserialize(char filename[]) {
     }
     return index;
 }
+
+inline void calculate_cusolver_buffer_size(cusolverDnHandle_t* cusolverH, cusolverDnParams_t* cusolverP, ix_size_t maxsamples, ky_size_t feat_threash, fp_t* A, fp_t* tau, fp_t* B, uint64_t* d_work_size, uint64_t* h_work_size) {
+    // calculate workspace size
+    cublasStatus_t cublas_status = CUBLAS_STATUS_SUCCESS;
+    cusolverStatus_t cusolver_status = CUSOLVER_STATUS_SUCCESS;    
+
+    // check memory usage for qr factorization
+    uint64_t d_work_size_qr = 0;
+    uint64_t h_work_size_qr = 0;
+    cusolver_status = cusolverDnXgeqrf_bufferSize(
+        *cusolverH, *cusolverP, maxsamples, feat_threash + 1,
+        cuda_float, A, maxsamples /*lda*/,
+        cuda_float, tau,
+        cuda_float, &d_work_size_qr, &h_work_size_qr
+    );
+    assert(cusolver_status == CUSOLVER_STATUS_SUCCESS);
+    // check memory usage for transposed matrix multiplication
+    int d_work_size_tm = 0;
+    cusolver_status = cusolverDnDormqr_bufferSize(
+        *cusolverH, CUBLAS_SIDE_LEFT, CUBLAS_OP_T,
+        maxsamples, 1 /*nrhs*/, feat_threash + 1,
+        A, maxsamples /*lda*/,
+        tau, B,
+        maxsamples /*ldb*/, &d_work_size_tm
+    );
+    assert(cusolver_status == CUSOLVER_STATUS_SUCCESS);
+
+    // allocate workbuffers
+    *d_work_size = (d_work_size_qr > ((uint64_t) d_work_size_tm)) ? d_work_size_qr : (uint64_t) d_work_size_tm;
+    *h_work_size = h_work_size_qr;
+}
+
+
 
 
 #endif  // _HELPERS_
