@@ -8,25 +8,23 @@
 
 
 
+
 #ifndef _HELPERS_
 #define _HELPERS_
 
-void read_keys(ky_t* keys, const std::string filename) {
+uint32_t read_keys(ky_t* keys, const std::string filename) {
 
     std::string line;
     std::ifstream data(filename);
 
-    for (ix_size_t key_i = 0; key_i < NUMKEYS; ++key_i) {
-        std::getline(data, line);
+    uint32_t key_i = 0;
+    while(std::getline(data, line)) {
         line = line.substr(0, KEYLEN);
-        //std::replace(line.begin(), line.end(), 'A', '!');
-        //std::replace(line.begin(), line.end(), 'B', '@');
-        //std::replace(line.begin(), line.end(), 'C', '_');
-        //std::replace(line.begin(), line.end(), 'D', '~');
         memcpy(keys + key_i, line.c_str(), KEYLEN);
+        ++key_i;
     }
-
     data.close();
+    return key_i;
 }
 
 inline void print_group(int num, group_t group) {
@@ -85,31 +83,6 @@ inline uint64_t get_block_num(uint64_t work_load) {
     return block_num;
 }
 
-inline bool allocate_gpu_memory(std::vector<GPUVar*> &requests) {
-
-    size_t required_memory = 0;
-    size_t free_space = 0;
-    size_t total_space = 0;
-
-    for (size_t i = 0; i < requests.size(); ++i) {
-        required_memory += requests[i]->size();
-    }
-
-    cudaMemGetInfo(&free_space, &total_space);
-    if (required_memory > free_space) {
-        return false;
-    } else {
-        for (size_t i = 0; i < requests.size(); ++i) {
-            if (requests[i]->allocate() == false) {
-                for (size_t i = 0; i < requests.size(); ++i) {
-                    requests[i]->free();
-                }
-                return false;
-            }
-        }
-        return true;
-    }
-} 
 
 void printMatrix(int m, int n, const fp_t*A, int lda, const char* name) {
     for(int row = 0 ; row < m ; row++) {
@@ -147,24 +120,24 @@ inline void swap_buffer_and_stream(
 
 }
 
-inline bool serialize(index_t &index, char filename[]) {
+inline void serialize(index_t &index, char filename[]) {
     FILE* file;
     file = fopen(filename,"wb");
-    fwrite(&(index.root_n), sizeof(ix_size_t), 1, file);
-    fwrite(&(index.group_n), sizeof(ix_size_t), 1, file);
+    fwrite(&(index.root_n), sizeof(uint32_t), 1, file);
+    fwrite(&(index.group_n), sizeof(uint32_t), 1, file);
     fwrite(index.root_pivots, sizeof(ky_t), index.root_n, file);
     fwrite(index.group_pivots, sizeof(ky_t), index.group_n, file);
 
 
-    for (ix_size_t group_i = 0; group_i < index.root_n + index.group_n; ++group_i) {
+    for (uint32_t group_i = 0; group_i < index.root_n + index.group_n; ++group_i) {
         group_t* group;
         if (group_i < index.root_n) {
             group = index.roots + group_i;
         } else {
             group = index.groups + group_i - index.root_n;
         }
-        fwrite(&(group->start), sizeof(ix_size_t), 1, file);
-        fwrite(&(group->m), sizeof(ix_size_t), 1, file);
+        fwrite(&(group->start), sizeof(uint32_t), 1, file);
+        fwrite(&(group->m), sizeof(uint32_t), 1, file);
         fwrite(&(group->n), sizeof(ky_size_t), 1, file);
         fwrite(group->feat_indices, sizeof(ky_size_t), group->n, file);
         fwrite(group->weights, sizeof(fp_t), group->n + 1, file);
@@ -180,8 +153,8 @@ inline index_t* deserialize(char filename[]) {
     FILE* file;
     file = fopen(filename,"rb");
     index_t* index = (index_t*) malloc(sizeof(index_t));
-    fread(&(index->root_n), sizeof(ix_size_t), 1, file);
-    fread(&(index->group_n), sizeof(ix_size_t), 1, file);
+    fread(&(index->root_n), sizeof(uint32_t), 1, file);
+    fread(&(index->group_n), sizeof(uint32_t), 1, file);
 
     index->roots = (group_t*) malloc(index->root_n * sizeof(group_t));
     index->groups = (group_t*) malloc(index->group_n * sizeof(group_t));
@@ -193,10 +166,10 @@ inline index_t* deserialize(char filename[]) {
     fread(index->group_pivots, sizeof(ky_t), index->group_n, file);
 
 
-    for (ix_size_t group_i = 0; group_i < index->group_n; ++group_i) {
+    for (uint32_t group_i = 0; group_i < index->group_n; ++group_i) {
         group_t* group = (group_t*) malloc(sizeof(group_t));
-        fread(&(group->start), sizeof(ix_size_t), 1, file);
-        fread(&(group->m), sizeof(ix_size_t), 1, file);
+        fread(&(group->start), sizeof(uint32_t), 1, file);
+        fread(&(group->m), sizeof(uint32_t), 1, file);
         fread(&(group->n), sizeof(ky_size_t), 1, file);
         group->feat_indices = (ky_size_t*) malloc(group->n * sizeof(ky_size_t));
         fread(group->feat_indices, sizeof(ky_size_t), group->n, file);
@@ -217,9 +190,8 @@ inline index_t* deserialize(char filename[]) {
     return index;
 }
 
-inline void calculate_cusolver_buffer_size(cusolverDnHandle_t* cusolverH, cusolverDnParams_t* cusolverP, ix_size_t maxsamples, ky_size_t feat_threash, fp_t* A, fp_t* tau, fp_t* B, uint64_t* d_work_size, uint64_t* h_work_size) {
+inline void calculate_cusolver_buffer_size(cusolverDnHandle_t* cusolverH, cusolverDnParams_t* cusolverP, uint32_t maxsamples, ky_size_t feat_threash, fp_t* A, fp_t* tau, fp_t* B, uint64_t* d_work_size, uint64_t* h_work_size) {
     // calculate workspace size
-    cublasStatus_t cublas_status = CUBLAS_STATUS_SUCCESS;
     cusolverStatus_t cusolver_status = CUSOLVER_STATUS_SUCCESS;    
 
     // check memory usage for qr factorization
@@ -248,6 +220,25 @@ inline void calculate_cusolver_buffer_size(cusolverDnHandle_t* cusolverH, cusolv
     *h_work_size = h_work_size_qr;
 }
 
+inline void split_array(ky_t* array, uint32_t len, ky_t* pivots, uint32_t num) {
+
+    //std::vector<std::thread> threads;
+    uint32_t interval = safe_division(len, num);
+    #pragma omp parallel for num_threads(CPUCORES)
+    for (uint32_t thread_i = 0; thread_i < num; ++thread_i) {
+        memcpy(pivots + thread_i, array + thread_i * interval, sizeof(ky_t));
+    }
+    //for (uint32_t thread_i = 0; thread_i < num; ++thread_i) {
+    //    threads.emplace_back(
+    //        [&] () -> void
+    //        {
+    //            memcpy(pivots + thread_i, array + thread_i * interval, sizeof(ky_t));
+    //        }
+    //    );
+    //}
+    //for (auto& thread : threads)
+    //    thread.join();
+}
 
 
 

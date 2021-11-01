@@ -5,6 +5,9 @@
 #include <cuda_runtime.h>
 #include <cuda_runtime_api.h>
 #include "cusolverDn.h"
+#include <thread>
+#include <omp.h>
+#include <thread>
 
 inline uint64_t safe_division(uint64_t divident, uint64_t divisor) {
     return (uint64_t) (divident + divisor - 1) / divisor;
@@ -80,15 +83,13 @@ const fp_t float_max = DBL_MAX;
 const fp_t float_min = -float_max;
 const fp_t float_eps = DBL_EPSILON;
 const fp_t eps = 0.2;
-const int_t int_max = UINT32_MAX;
 #define SINGLE false
 // bias value A
 const fp_t bias = 1;
 
 // index size
-typedef uint64_t ix_size_t;
-const ix_size_t NUMKEYS = 200'000'000;
-const ix_size_t ix_max = UINT64_MAX;
+const uint32_t NUMKEYS = 200'000'000;
+const uint32_t int_max = UINT32_MAX;
 
 // character
 typedef char ch_t;
@@ -103,13 +104,11 @@ const ky_size_t KEYSIZE = KEYLEN * sizeof(ch_t);
 typedef ch_t ky_t[KEYLEN];
 // group type
 struct group_t {
-    ix_size_t start;
-    ix_size_t m;
+    uint32_t start;
+    uint32_t m;
     ky_size_t n;
     ky_size_t* feat_indices;
     fp_t* weights;
-    ky_size_t* dev_feat_indices;
-    fp_t* dev_weights;
     fp_t avg_err;
     fp_t left_err;
     fp_t right_err;
@@ -119,9 +118,9 @@ struct group_t {
 
 // index type
 struct index_t {
-    ix_size_t root_n;
+    uint32_t root_n;
     group_t* roots;
-    ix_size_t group_n;
+    uint32_t group_n;
     group_t* groups;
     ky_t* root_pivots;
     ky_t* group_pivots;
@@ -132,17 +131,18 @@ struct index_t {
 // gpu
 
 cudaDeviceProp prop = get_device_prop();
-const ix_size_t CUDACORES = getSPcores(prop);
-const ix_size_t BLOCKSIZE = get_block_size(prop, CUDACORES);
-const ix_size_t BLOCKNUM = (ix_size_t) (CUDACORES / BLOCKSIZE);
-//const ix_size_t VRAM = 4.2331E+9; // whole capacity
-const ix_size_t VRAM = prop.totalGlobalMem;
+const uint32_t CUDACORES = getSPcores(prop);
+const uint32_t CPUCORES = std::thread::hardware_concurrency();
+const uint32_t BLOCKSIZE = get_block_size(prop, CUDACORES);
+const uint32_t BLOCKNUM = (uint32_t) (CUDACORES / BLOCKSIZE);
+//const uint32_t VRAM = 4.2331E+9; // whole capacity
+const uint32_t VRAM = prop.totalGlobalMem;
 const float LOADFACTOR = 0.12;
-//const ix_size_t BATCHLEN = safe_division(VRAM * LOADFACTOR, KEYSIZE);
-const ix_size_t BATCHLEN = 200'000'000;
-ix_size_t MINSIZE = 1'000'000;
-const ix_size_t QUERYSIZE = 2 * CUDACORES;
-const ix_size_t MAXSAMPLES = 40'000'000;
+//const uint32_t BATCHLEN = safe_division(VRAM * LOADFACTOR, KEYSIZE);
+const uint32_t BATCHLEN = 200'000'000;
+uint32_t MINSIZE = 1'000'000;
+const uint32_t QUERYSIZE = CUDACORES;
+const uint32_t MAXSAMPLES = 40'000'000;
 
 const char FILENAME[] = "./gene/gene200normal.txt";
 
@@ -151,94 +151,6 @@ const char FILENAME[] = "./gene/gene200normal.txt";
 
 
 
-class GPUVar {
-    public:
-        void* address;
-        size_t size_element;
-        size_t count;
-        size_t size_manual;
-        bool allocated;
-        GPUVar() {
-            address = nullptr;
-            size_element = 1;
-            count = 1;
-            allocated = 0;
-            size_manual = 0;
-        }
-         size_t size () {
-            if (size_manual == 0) {
-                return size_element * count;
-            } else {
-                return size_manual;
-            }
-        }
-        bool allocate () {
-            if (cudaMalloc(&address, size()) == cudaSuccess) {
-                allocated = true;
-                return true;
-            } else {
-                return false;
-            }
-        }
-        bool free () {
-            if (cudaFree(address) == cudaSuccess) {
-                allocated = false;
-                return true;
-            } else {
-                return false;
-            }            
-        }
-};
-
-class GPUInt : public GPUVar {
-    public:
-        GPUInt () {
-            size_element = sizeof(int_t);
-        }
-        int_t* ptr () {
-            return (int_t*) address;
-        }
-};
-
-class GPUFloat : public GPUVar {
-    public:
-        GPUFloat () {
-            size_element = sizeof(fp_t);
-        }
-        fp_t* ptr () {
-            return (fp_t*) address;
-        }
-};
-
-class GPUChar : public GPUVar {
-    public:
-        GPUChar () {
-            size_element = sizeof(ch_t);
-        }
-        ch_t* ptr () {
-            return (ch_t*) address;
-        }
-};
-
-class GPUKeySize : public GPUVar {
-    public:
-        GPUKeySize () {
-            size_element = sizeof(ky_size_t);
-        }
-        ky_size_t* ptr () {
-            return (ky_size_t*) address;
-        }
-};
-
-class GPUInfoInt : public GPUVar {
-    public:
-        GPUInfoInt () {
-            size_element = sizeof(int);
-        }
-        int* ptr () {
-            return (int*) address;
-        }
-};
 
 
 #endif // _GLOBALS_

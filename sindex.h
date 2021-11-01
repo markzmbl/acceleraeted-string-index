@@ -5,6 +5,8 @@
 #include "globals.h"
 #include <iostream>
 #include <algorithm>
+#include <chrono>
+#include <immintrin.h>
 
 
 
@@ -15,7 +17,7 @@
 
 inline GroupStatus calculate_group(
     const ky_t* hst_keys,ky_size_t* hst_pair_lens, ky_t* dev_keys, ky_size_t* pair_lens, group_t* group,
-    ix_size_t processed, ix_size_t start_i, ix_size_t m, ky_size_t feat_thresh, fp_t error_thresh, ix_size_t maxsamples,
+    uint32_t processed, uint32_t start_i, uint32_t m, ky_size_t feat_thresh, fp_t error_thresh, uint32_t maxsamples,
     cusolverDnHandle_t* cusolverH, cusolverDnParams_t* cusolverP, cublasHandle_t* cublasH,
     int_t* dev_min_len, int_t* dev_max_len, fp_t* A, fp_t* B, int_t* hst_uneqs, int_t* dev_uneqs,
     ky_size_t* hst_feat_indices, ky_size_t* dev_feat_indices, int_t* mutex, fp_t* tau, int* dev_info,
@@ -25,9 +27,7 @@ inline GroupStatus calculate_group(
     cudaError_t cudaStat = cudaSuccess;
 
     //cpu
-    cudaError_t cuda_stat = cudaSuccess;
-    std::vector<GPUVar*> requests;
-    int_t host_min_len = int_max;
+    int_t host_min_len = UINT32_MAX;
     int_t host_max_len = 0;
     ky_size_t n_star = 0;
     ky_size_t n = 0;
@@ -38,16 +38,15 @@ inline GroupStatus calculate_group(
     fp_t host_min_error = float_max;
     fp_t host_max_error = -float_max;
     fp_t avg_error = 0;
-    fp_t* weights;
         
     // set step and m_star to avoid memory exhaustion
     fp_t step;
-    ix_size_t m_star;
-    ix_size_t m_1_star;
+    uint32_t m_star;
+    uint32_t m_1_star;
     if (m > maxsamples) {
         step = ((fp_t) m) / maxsamples;
         m_star = maxsamples;
-        m_1_star = ((ix_size_t) (fmod(m, step)) == 1) ? m_star - 1 : m_star;
+        m_1_star = ((uint32_t) (fmod(m, step)) == 1) ? m_star - 1 : m_star;
     } else {
         step = 1;
         m_star = m;
@@ -59,18 +58,18 @@ inline GroupStatus calculate_group(
     fp_t* hst_B;
 
     // reset min and max to neutral values
-    assert(cudaMemset(dev_min_len, int_max, sizeof(int_t)) == cudaSuccess);
+    assert(cudaMemcpy(dev_min_len, &int_max, sizeof(int_t), cudaMemcpyHostToDevice) == cudaSuccess);
     assert(cudaMemset(dev_max_len, 0,       sizeof(int_t)) == cudaSuccess);
 
     // --- range query
     // m_star - 1 because the ith key is compared with the (i+step)th key
     rmq_kernel
-        <<<get_block_num(m_star), BLOCKSIZE, BLOCKSIZE / 32 * 2 * sizeof(ky_size_t)>>>
-        (pair_lens, start_i, m_star , dev_min_len, dev_max_len, step);
+        <<<get_block_num(m_1_star), BLOCKSIZE, BLOCKSIZE / 32 * 2 * sizeof(ky_size_t)>>>
+        (pair_lens, start_i, m_1_star , dev_min_len, dev_max_len, step);
     cudaStat = cudaGetLastError();
     if(cudaStat != cudaSuccess) {
         printf(
-            "[ASSERTION]\tAfter Colum Major Kernel\n"
+            "[ASSERTION]\tAfter RMQ Kernel\n"
             "\tcudaError:\t%s\n",
             cudaGetErrorString(cudaStat)
         );
@@ -85,8 +84,9 @@ inline GroupStatus calculate_group(
     if (sanity_check) {
         ky_size_t san_min_len = ky_size_max;
         ky_size_t san_max_len = 0;
-        for (fp_t key_i = 0; key_i < m - 1; key_i += step) {
-            ky_size_t key_len = *(hst_pair_lens + ((ix_size_t) key_i));
+        for (fp_t key_i = 0; key_i < m_1_star; key_i += step) {
+            ky_size_t key_len = *(hst_pair_lens + start_i + ((uint32_t) key_i));
+
             if (key_len != ky_size_max) {
                 if (key_len < san_min_len) {
                     san_min_len = key_len;
@@ -144,10 +144,10 @@ inline GroupStatus calculate_group(
     if (sanity_check) {
         for (ky_size_t feat_i = 0; feat_i < n_star; ++feat_i) {
             bool is_uneq = false;
-            for (ix_size_t key_i = 0; key_i < m_star; ++key_i) {
+            for (uint32_t key_i = 0; key_i < m_star; ++key_i) {
                 ky_size_t char_i = host_min_len + feat_i;
-                const ky_t* key0 = hst_keys + processed + start_i + (ix_size_t) (key_i * step);
-                const ky_t* key1 = hst_keys + processed + start_i + (ix_size_t) ((key_i + 1) * step);
+                const ky_t* key0 = hst_keys + processed + start_i + (uint32_t) (key_i * step);
+                const ky_t* key1 = hst_keys + processed + start_i + (uint32_t) ((key_i + 1) * step);
                 ch_t char0 = *(((ch_t*) *key0) + char_i);
                 ch_t char1 = *(((ch_t*) *key1) + char_i);
                 if (char0 != char1) {
@@ -213,8 +213,8 @@ inline GroupStatus calculate_group(
     if (sanity_check) {
         cudaStat = cudaMallocHost(&hst_A, m_star * n_tilde * sizeof(fp_t));
         cudaStat = cudaMemcpy(hst_A, A, m_star * n_tilde * sizeof(fp_t), cudaMemcpyDeviceToHost);
-        for (ix_size_t key_i = 0; key_i < m_star; ++key_i) {
-            const ky_t* key0 = hst_keys + processed + start_i + ((ix_size_t) (key_i * step));
+        for (uint32_t key_i = 0; key_i < m_star; ++key_i) {
+            const ky_t* key0 = hst_keys + processed + start_i + ((uint32_t) (key_i * step));
             for (ky_size_t feat_i = 0; feat_i < n_tilde; ++feat_i) {
                 fp_t feat1 = *(hst_A + feat_i * m_star + key_i);
                 fp_t feat0;
@@ -247,8 +247,8 @@ inline GroupStatus calculate_group(
     if (sanity_check) {
         cudaMallocHost(&hst_B, m * sizeof(fp_t));
         cudaMemcpy(hst_B, B, m * sizeof(fp_t), cudaMemcpyDeviceToHost);
-        for (ix_size_t key_i = 0; key_i < m_star; ++key_i) {
-            assert(*(hst_B + key_i) == processed + start_i + ((ix_size_t) (key_i * step)));
+        for (uint32_t key_i = 0; key_i < m_star; ++key_i) {
+            assert(*(hst_B + key_i) == processed + start_i + ((uint32_t) (key_i * step)));
         }
     }
 
@@ -262,9 +262,9 @@ inline GroupStatus calculate_group(
     // actual QR factorization
     cusolver_status = cusolverDnXgeqrf(
         *cusolverH, *cusolverP, m_star, n_tilde,
-        cuda_float, A, m_star /*lda*/,
-        cuda_float, tau, 
-        cuda_float, d_work, d_work_size,
+        CUDA_R_64F, A, m_star /*lda*/,
+        CUDA_R_64F, tau, 
+        CUDA_R_64F, d_work, d_work_size,
         h_work, h_work_size, dev_info
     );
 
@@ -289,9 +289,6 @@ inline GroupStatus calculate_group(
         (fp_t*) d_work, d_work_size, dev_info
     );
 
-    if (h_work_size > 0) {
-        assert(cudaFreeHost(h_work) == cudaSuccess);
-    }
 
     assert(cudaMemcpy(&host_info, dev_info, sizeof(int), cudaMemcpyDeviceToHost) == cudaSuccess);
     if (host_info != 0) {
@@ -320,7 +317,7 @@ inline GroupStatus calculate_group(
     // weights sanity check
     if (sanity_check) {
         cudaMemcpy(hst_B, B, n_tilde * sizeof(fp_t), cudaMemcpyDeviceToHost);
-        for (ix_size_t feat_i = 0; feat_i < n_tilde; ++feat_i) {
+        for (uint32_t feat_i = 0; feat_i < n_tilde; ++feat_i) {
             // nan check
 
             if ((*(hst_B + feat_i) != *(hst_B + feat_i)) != false) {
@@ -371,7 +368,7 @@ inline GroupStatus calculate_group(
         //debug
         fp_t blk_acc;
 
-        for (ix_size_t key_i = 0; key_i < m; ++key_i) {
+        for (uint32_t key_i = 0; key_i < m; ++key_i) {
 
             //debug
             if (key_i % BLOCKSIZE == 0) {
@@ -448,129 +445,36 @@ inline GroupStatus calculate_group(
 
 
 
-inline void grouping(
-    const ky_t* keys, ix_size_t numkeys,
+inline uint32_t grouping(
+    const ky_t* keys, uint32_t numkeys,
     fp_t et, ky_size_t pt,
-    ix_size_t fstep, ix_size_t bstep, ix_size_t minsize,
-    std::vector<group_t> &groups) {
+    uint32_t fstep, uint32_t bstep, uint32_t minsize, group_t* &groups,
+    ky_t* dev_keys, ky_size_t* dev_pair_lens, uint32_t maxsamples,
+    cusolverDnHandle_t* cusolverH, cusolverDnParams_t* cusolverP, cublasHandle_t* cublasH,
+    int_t* dev_min_len, int_t* dev_max_len, fp_t* A, fp_t* B, int_t* hst_uneqs, int_t* dev_uneqs,
+    ky_size_t* hst_feat_indices, ky_size_t* dev_feat_indices, int_t* mutex, fp_t* tau, int* dev_info,
+    void* d_work, void* h_work, uint64_t d_work_size, uint64_t h_work_size, fp_t* dev_acc_error, fp_t* dev_min_error, fp_t* dev_max_error) {
 
     cudaError_t cudaStat = cudaSuccess;
 
-    // cusolver and cublas handles
-    cusolverDnHandle_t cusolverH = nullptr;
-    cusolverDnParams_t cusolverP = nullptr;
-    cublasHandle_t cublasH = nullptr;
-    assert(cusolverDnCreate(&cusolverH) == cudaSuccess);
-    assert(cusolverDnCreateParams(&cusolverP) == cudaSuccess);
-    assert(cublasCreate(&cublasH) == cudaSuccess);
-
-    // declare cpu variables
-    ix_size_t processed = 0;
-    ix_size_t start_i = 0;
-    ix_size_t end_i = 0;
-    int_t* hst_uneqs;
-    ky_size_t* hst_feat_indices;
-    void* h_work;
-    fp_t* weights;
-
-    // declare gpu variables
-    ky_t* dev_keys;
-    ky_size_t* dev_pair_lens;
-    int_t* dev_min_len;
-    int_t* dev_max_len;
-    fp_t* A;
-    fp_t* B;
-    int_t* dev_uneqs;
-    ky_size_t* dev_feat_indices;
-    int_t* mutex;
-    fp_t* tau;
-    int* dev_info;
-    void* d_work;
-    fp_t* dev_acc_error;
-    fp_t* dev_min_error;
-    fp_t* dev_max_error;
-
-    assert(cudaMallocHost(&hst_uneqs, pt * sizeof(int_t)) == cudaSuccess);
-    assert(cudaMallocHost(&hst_feat_indices, pt * sizeof(ky_size_t)) == cudaSuccess);
-    assert(cudaMallocHost(&weights, (pt + 1) * sizeof(fp_t)) == cudaSuccess);
-
-
-    assert(cudaMalloc(&dev_keys, BATCHLEN * KEYSIZE) == cudaSuccess);
-    assert(cudaMalloc(&dev_pair_lens, (BATCHLEN - 1) * sizeof(ky_size_t)) == cudaSuccess);
-    assert(cudaMalloc(&dev_min_len, sizeof(int_t)) == cudaSuccess);
-    assert(cudaMalloc(&dev_max_len, sizeof(int_t)) == cudaSuccess);
-    assert(cudaMalloc(&dev_uneqs, pt * sizeof(int_t)) == cudaSuccess);
-    assert(cudaMalloc(&dev_feat_indices, pt * sizeof(ky_size_t)) == cudaSuccess);
-    assert(cudaMalloc(&mutex, sizeof(int_t)) == cudaSuccess);
-    assert(cudaMalloc(&tau, (pt + 1) * sizeof(fp_t)) == cudaSuccess);
-    assert(cudaMalloc(&dev_info, sizeof(int)) == cudaSuccess);
-    assert(cudaMalloc(&dev_acc_error, sizeof(fp_t)) == cudaSuccess);
-    assert(cudaMalloc(&dev_min_error, sizeof(fp_t)) == cudaSuccess);
-    assert(cudaMalloc(&dev_max_error, sizeof(fp_t)) == cudaSuccess);    
-
-    uint64_t d_work_size = 0;
-    uint64_t h_work_size = 0;
-    size_t free_space = 0;
-    size_t total_space = 0;
-    cudaMemGetInfo(&free_space, &total_space);
-    // debug video output
-    free_space -= 2'000'000'000;
-    // A(maxsamples x (feat_threash + 1)) and B(maxsamples x 1)
-    ix_size_t maxsamples_max = free_space / ((pt + 2) * sizeof(fp_t));
-    ix_size_t maxsamples_min = maxsamples_max;
-
-    // exponential search for boundary
-    do {        
-        assert(cudaMalloc(&A, maxsamples_min * (pt + 1) * sizeof(fp_t)) == cudaSuccess);
-        assert(cudaMalloc(&B, maxsamples_min * sizeof(fp_t)) == cudaSuccess);
-        calculate_cusolver_buffer_size(
-            &cusolverH, &cusolverP,
-            maxsamples_min, pt, A, tau, B,
-            &d_work_size, &h_work_size
-        );
-        assert(cudaFree(A) == cudaSuccess);
-        assert(cudaFree(B) == cudaSuccess);
-        maxsamples_min /= 2;
-    } while (maxsamples_min * (pt + 2) * sizeof(fp_t) + d_work_size > free_space);
- 
-    ix_size_t maxsamples_mid = (maxsamples_min + maxsamples_max) / 2;
-
-    while (maxsamples_min <= maxsamples_max) {
-        assert(cudaMalloc(&A, maxsamples_mid * (pt + 1) * sizeof(fp_t)) == cudaSuccess);
-        assert(cudaMalloc(&B, maxsamples_mid * sizeof(fp_t)) == cudaSuccess);
-        calculate_cusolver_buffer_size(
-            &cusolverH, &cusolverP,
-            maxsamples_mid, pt, A, tau, B,
-            &d_work_size, &h_work_size
-        );
-        assert(cudaFree(A) == cudaSuccess);
-        assert(cudaFree(B) == cudaSuccess);
-        if (maxsamples_mid * (pt + 2) * sizeof(fp_t) + d_work_size > free_space)
-            maxsamples_max = maxsamples_mid - 1;
-        else
-            maxsamples_min = maxsamples_mid + 1;
-
-        maxsamples_mid = (maxsamples_min + maxsamples_max)/2;
-    }
-    ix_size_t maxsamples = maxsamples_mid;
-
-    assert(cudaMalloc(&A, maxsamples * (pt + 1) * sizeof(fp_t)) == cudaSuccess);
-    assert(cudaMalloc(&B, maxsamples * sizeof(fp_t)) == cudaSuccess);
-    assert(cudaMalloc(&d_work, d_work_size) == cudaSuccess);
-    assert(cudaMallocHost(&h_work, h_work_size) == cudaSuccess);
-
     // sanity check variable
     ky_size_t* hst_pair_lens;
-
-
     if (sanity_check) {
         cudaMallocHost(&hst_pair_lens, (BATCHLEN - 1) * sizeof(ky_size_t));
     }
 
+    uint32_t processed = 0;
+    uint32_t start_i = 0;
+    uint32_t end_i = 0;
+
+    std::vector<group_t> group_vector;
     GroupStatus result = threshold_success;
+
+
+
     while (result != finished) {
 
-        ix_size_t batchlen = (numkeys - processed < BATCHLEN) ? numkeys - processed : BATCHLEN;
+        uint32_t batchlen = (numkeys - processed < BATCHLEN) ? numkeys - processed : BATCHLEN;
         assert(cudaMemcpy(dev_keys, keys + processed, batchlen * KEYSIZE, cudaMemcpyHostToDevice) == cudaSuccess);
         // calculate common prefix lenghts
         pair_prefix_kernel
@@ -589,7 +493,7 @@ inline void grouping(
         // pair length sanity check
         if (sanity_check) {
             cudaMemcpy(hst_pair_lens, dev_pair_lens, (batchlen - 1) * sizeof(ky_size_t), cudaMemcpyDeviceToHost);
-            for (ix_size_t key_i = 0; key_i < (batchlen - 1); ++key_i) {
+            for (uint32_t key_i = 0; key_i < (batchlen - 1); ++key_i) {
                 ky_size_t prefix_len = ky_size_max;
                 ky_size_t char_i;
                 for (char_i = 0; char_i < KEYSIZE; ++char_i) {
@@ -637,7 +541,7 @@ inline void grouping(
                 result = calculate_group(
                     keys, hst_pair_lens, dev_keys, dev_pair_lens, &group,
                     processed, start_i, end_i - start_i, pt, et, maxsamples,
-                    &cusolverH, &cusolverP, &cublasH,
+                    cusolverH, cusolverP, cublasH,
                     dev_min_len, dev_max_len, A, B, hst_uneqs, dev_uneqs,
                     hst_feat_indices, dev_feat_indices, mutex, tau, dev_info,
                     d_work, h_work, d_work_size, h_work_size, dev_acc_error, dev_min_error, dev_max_error, false
@@ -676,7 +580,7 @@ inline void grouping(
                 result = calculate_group(
                     keys, hst_pair_lens, dev_keys, dev_pair_lens, &group,
                     processed, start_i, end_i - start_i, pt, et, maxsamples,
-                    &cusolverH, &cusolverP, &cublasH,
+                    cusolverH, cusolverP, cublasH,
                     dev_min_len, dev_max_len, A, B, hst_uneqs, dev_uneqs,
                     hst_feat_indices, dev_feat_indices, mutex, tau, dev_info,
                     d_work, h_work, d_work_size, h_work_size, dev_acc_error, dev_min_error, dev_max_error, force
@@ -700,9 +604,9 @@ inline void grouping(
                 cudaMemcpy(group.weights, B, (group.n + 1) * sizeof(fp_t), cudaMemcpyDeviceToHost);
 
                 if (verbose) {
-                    print_group(groups.size(), group);
+                    print_group(group_vector.size(), group);
                 }
-                groups.push_back(group);
+                group_vector.push_back(group);
 
 
 
@@ -724,6 +628,165 @@ inline void grouping(
             start_i = 0;
         }
     }
+    if (sanity_check) {
+        cudaFreeHost(hst_pair_lens);
+    }
+
+    uint32_t group_n = group_vector.size();
+    groups = (group_t*) malloc(group_n * sizeof(group_t));
+    mempcpy(groups, group_vector.data(), group_n * sizeof(group_t));
+    return group_n;
+}
+
+inline index_t* create_index(
+    ky_t* keys, uint32_t numkeys, fp_t et, ky_size_t pt,
+    uint32_t fstep, uint32_t bstep, uint32_t minsize) {
+
+
+
+
+    // **********************************
+    // *** declaration and allocation ***
+    // **********************************
+
+
+    // cusolver and cublas handles
+    cusolverDnHandle_t cusolverH = nullptr;
+    cusolverDnParams_t cusolverP = nullptr;
+    cublasHandle_t cublasH = nullptr;
+    assert(cusolverDnCreate(&cusolverH) == cudaSuccess);
+    assert(cusolverDnCreateParams(&cusolverP) == cudaSuccess);
+    assert(cublasCreate(&cublasH) == cudaSuccess);
+    // declare cpu variables
+    int_t* hst_uneqs;
+    ky_size_t* hst_feat_indices;
+    void* h_work;
+    fp_t* weights;
+    // declare gpu variables
+    ky_t* dev_keys;
+    ky_size_t* dev_pair_lens;
+    int_t* dev_min_len;
+    int_t* dev_max_len;
+    fp_t* A;
+    fp_t* B;
+    int_t* dev_uneqs;
+    ky_size_t* dev_feat_indices;
+    int_t* mutex;
+    fp_t* tau;
+    int* dev_info;
+    void* d_work;
+    fp_t* dev_acc_error;
+    fp_t* dev_min_error;
+    fp_t* dev_max_error;
+    assert(cudaMallocHost(&hst_uneqs, pt * sizeof(int_t)) == cudaSuccess);
+    assert(cudaMallocHost(&hst_feat_indices, pt * sizeof(ky_size_t)) == cudaSuccess);
+    assert(cudaMallocHost(&weights, (pt + 1) * sizeof(fp_t)) == cudaSuccess);
+    assert(cudaMalloc(&dev_keys, BATCHLEN * KEYSIZE) == cudaSuccess);
+    assert(cudaMalloc(&dev_pair_lens, (BATCHLEN - 1) * sizeof(ky_size_t)) == cudaSuccess);
+    assert(cudaMalloc(&dev_min_len, sizeof(int_t)) == cudaSuccess);
+    assert(cudaMalloc(&dev_max_len, sizeof(int_t)) == cudaSuccess);
+    assert(cudaMalloc(&dev_uneqs, pt * sizeof(int_t)) == cudaSuccess);
+    assert(cudaMalloc(&dev_feat_indices, pt * sizeof(ky_size_t)) == cudaSuccess);
+    assert(cudaMalloc(&mutex, sizeof(int_t)) == cudaSuccess);
+    assert(cudaMalloc(&tau, (pt + 1) * sizeof(fp_t)) == cudaSuccess);
+    assert(cudaMalloc(&dev_info, sizeof(int)) == cudaSuccess);
+    assert(cudaMalloc(&dev_acc_error, sizeof(fp_t)) == cudaSuccess);
+    assert(cudaMalloc(&dev_min_error, sizeof(fp_t)) == cudaSuccess);
+    assert(cudaMalloc(&dev_max_error, sizeof(fp_t)) == cudaSuccess);    
+
+    // ********************************
+    // *** find maximum sample size ***
+    // ********************************
+
+    uint64_t d_work_size = 0;
+    uint64_t h_work_size = 0;
+    size_t free_space = 0;
+    size_t total_space = 0;
+    cudaMemGetInfo(&free_space, &total_space);
+    // debug video output
+    free_space -= 2'000'000'000;
+    // A(maxsamples x (feat_threash + 1)) and B(maxsamples x 1)
+    uint32_t maxsamples_max = free_space / ((pt + 2) * sizeof(fp_t));
+    uint32_t maxsamples_min = maxsamples_max;
+
+    // exponential search for boundary
+    do {        
+        assert(cudaMalloc(&A, maxsamples_min * (pt + 1) * sizeof(fp_t)) == cudaSuccess);
+        assert(cudaMalloc(&B, maxsamples_min * sizeof(fp_t)) == cudaSuccess);
+        calculate_cusolver_buffer_size(
+            &cusolverH, &cusolverP,
+            maxsamples_min, pt, A, tau, B,
+            &d_work_size, &h_work_size
+        );
+        assert(cudaFree(A) == cudaSuccess);
+        assert(cudaFree(B) == cudaSuccess);
+        maxsamples_min /= 2;
+    } while (maxsamples_min * (pt + 2) * sizeof(fp_t) + d_work_size > free_space);
+ 
+    uint32_t maxsamples_mid = (maxsamples_min + maxsamples_max) / 2;
+
+    while (maxsamples_min <= maxsamples_max) {
+        assert(cudaMalloc(&A, maxsamples_mid * (pt + 1) * sizeof(fp_t)) == cudaSuccess);
+        assert(cudaMalloc(&B, maxsamples_mid * sizeof(fp_t)) == cudaSuccess);
+        calculate_cusolver_buffer_size(
+            &cusolverH, &cusolverP,
+            maxsamples_mid, pt, A, tau, B,
+            &d_work_size, &h_work_size
+        );
+        assert(cudaFree(A) == cudaSuccess);
+        assert(cudaFree(B) == cudaSuccess);
+        if (maxsamples_mid * (pt + 2) * sizeof(fp_t) + d_work_size > free_space)
+            maxsamples_max = maxsamples_mid - 1;
+        else
+            maxsamples_min = maxsamples_mid + 1;
+
+        maxsamples_mid = (maxsamples_min + maxsamples_max)/2;
+    }
+    uint32_t maxsamples = maxsamples_mid;
+
+    assert(cudaMalloc(&A, maxsamples * (pt + 1) * sizeof(fp_t)) == cudaSuccess);
+    assert(cudaMalloc(&B, maxsamples * sizeof(fp_t)) == cudaSuccess);
+    assert(cudaMalloc(&d_work, d_work_size) == cudaSuccess);
+    assert(cudaMallocHost(&h_work, h_work_size) == cudaSuccess);
+
+    // ****************
+    // *** grouping ***
+    // ****************
+    // grouping of keys
+    group_t* groups;
+    uint32_t group_n = grouping(keys, numkeys, et, pt, fstep, bstep, minsize, groups,
+        dev_keys, dev_pair_lens, maxsamples,
+        &cusolverH, &cusolverP, &cublasH,
+        dev_min_len, dev_max_len, A, B, hst_uneqs,  dev_uneqs,
+        hst_feat_indices, dev_feat_indices, mutex, tau, dev_info,
+        d_work, h_work, d_work_size, h_work_size, dev_acc_error, dev_min_error, dev_max_error);
+    // gather group pivots
+    ky_t group_pivots[group_n];
+    for (uint32_t group_i = 0; group_i < group_n; ++group_i) {
+        group_t group = *(groups + group_i);
+        memcpy(group_pivots + group_i, keys + group.start, sizeof(ky_t));
+    }
+    // grouping of roots
+    group_t* roots;
+    uint32_t root_n = 0;
+    if (group_n > 1) {
+        root_n = grouping(group_pivots, group_n, et, pt, 10, 5, 5, roots,
+        dev_keys, dev_pair_lens, maxsamples,
+        &cusolverH, &cusolverP, &cublasH,
+        dev_min_len, dev_max_len, A, B, hst_uneqs,  dev_uneqs,
+        hst_feat_indices, dev_feat_indices, mutex, tau, dev_info,
+        d_work, h_work, d_work_size, h_work_size, dev_acc_error, dev_min_error, dev_max_error);
+    }
+    ky_t root_pivots[root_n];
+    // gater root pivots
+    if (root_n > 0) {
+        for (uint32_t root_i = 0; root_i < root_n; ++root_i) {
+            group_t root = *(roots + root_i);
+            memcpy(root_pivots + root_i, group_pivots + root.start, sizeof(ky_t));
+        }
+    }
+    // create index
+    index_t index = { root_n, roots, group_n, groups, root_pivots, group_pivots};
 
     assert(cudaFree(dev_keys) == cudaSuccess);
     assert(cudaFree(dev_pair_lens) == cudaSuccess);
@@ -740,55 +803,42 @@ inline void grouping(
     assert(cudaFree(A) == cudaSuccess);
     assert(cudaFree(B) == cudaSuccess);
     assert(cudaFree(d_work) == cudaSuccess); 
-    if (sanity_check) {
-        cudaFreeHost(hst_pair_lens);
-    }
-
     assert(cusolverDnDestroy(cusolverH) == cudaSuccess);
     assert(cusolverDnDestroyParams(cusolverP) == cudaSuccess);
     assert(cublasDestroy(cublasH) == cudaSuccess);
+
+    return &index;
 }
 
-//inline 
 
-
-inline ix_size_t query_range(
+inline uint32_t query_range(
         ky_t* dev_key, ky_t &key, ky_t* keys,
-        ix_size_t query_start, ix_size_t query_end,
-        ix_size_t left, ix_size_t mid, ix_size_t right,
-        cudaStream_t* stream_left, cudaStream_t* stream_mid, cudaStream_t* stream_right,
-        ky_t* buffer_left, ky_t* buffer_mid, ky_t* buffer_right,
-        ix_size_t querysize, int_t* dev_pos, int_t &hst_pos) {
+        uint32_t query_start, uint32_t query_end,
+        uint32_t left, uint32_t mid, uint32_t right,
+        ky_t* query_buffer, uint32_t querysize,
+        int_t* dev_pos, int_t &hst_pos) {
 
     QueryStatus result;
     do {
 
-        // fill left and write buffer
-        if (left < ix_max) {
-            querysize = (mid - left < QUERYSIZE) ? mid - left : QUERYSIZE;
-            assert(cudaMemcpyAsync(buffer_left,  keys + left,  querysize * sizeof(ky_t), cudaMemcpyHostToDevice, *stream_left) == cudaSuccess);
-        }
-        if (right < ix_max) {
-            querysize = (query_end - right < QUERYSIZE) ? query_end - right : QUERYSIZE;
-            assert(cudaMemcpyAsync(buffer_right, keys + right, querysize * sizeof(ky_t), cudaMemcpyHostToDevice, *stream_right) == cudaSuccess);
-        }
+        assert(cudaMemcpy(query_buffer, keys + mid, querysize * sizeof(ky_t), cudaMemcpyHostToDevice) == cudaSuccess);
         assert(cudaMemcpy(dev_pos, &int_max, sizeof(int_t), cudaMemcpyHostToDevice) == cudaSuccess);
         // run kernel for mid buffer in the mean time
-        if (right != ix_max) {
+        if (right != UINT32_MAX) {
             querysize = (right - mid < QUERYSIZE) ? right - mid : QUERYSIZE;
         } else {
             querysize = (query_end - mid < QUERYSIZE) ? query_end - mid : QUERYSIZE;
         }
         query_kernel
-            <<<get_block_num(querysize), BLOCKSIZE, BLOCKSIZE / 32 * sizeof(int_t), *stream_mid>>>
-            (dev_key, buffer_mid, querysize, dev_pos);
+            <<<get_block_num(querysize), BLOCKSIZE, BLOCKSIZE / 32 * sizeof(int_t)>>>
+            (dev_key, query_buffer, querysize, dev_pos);
         assert(cudaGetLastError() == cudaSuccess);
         // get result from mid buffer
         assert(cudaMemcpy(&hst_pos, dev_pos, sizeof(int_t), cudaMemcpyDeviceToHost) == cudaSuccess);
 
 
         // evaluate result
-        if (hst_pos != int_max) {
+        if (hst_pos != UINT32_MAX) {
             if (memcmp(&key, keys + mid + hst_pos, sizeof(ky_t)) == 0) {
                 result = found_target;
                 return mid + hst_pos;
@@ -808,36 +858,33 @@ inline ix_size_t query_range(
         if (result != found_target) {
             switch (result) {
                 case target_left:
-                    swap_buffer_and_stream(&buffer_mid, &stream_mid, &buffer_left, &stream_left);
                     query_end = mid;
                     mid = left;
                     break;
                 
                 case target_right:
-                    swap_buffer_and_stream(&buffer_mid, &stream_mid, &buffer_right, &stream_right);
                     query_start = mid + QUERYSIZE;
                     mid = right;
                     break;
             }
 
-            // kernel indices
             if (query_end - query_start <= QUERYSIZE) {
                 if (mid > query_start) {
                     left = query_start;
                 } else {
-                    left = ix_max;
+                    left = UINT32_MAX;
                 }
-                right = ix_max;
+                right = UINT32_MAX;
             } else if (query_end - query_start <= 2 * QUERYSIZE) {
                 if (query_start < mid) {
                     left = query_start;
                 } else {
-                    left = ix_max;
+                    left = UINT32_MAX;
                 }
                 if (query_start + QUERYSIZE < mid) {
                     right = query_start + QUERYSIZE;
                 } else {
-                    right = ix_max;
+                    right = UINT32_MAX;
                 }
             } else {
                 left = (mid + query_start - QUERYSIZE) / 2;
@@ -848,11 +895,9 @@ inline ix_size_t query_range(
     } while (result != found_target);
 }
 
-inline ix_size_t get_position_from_group(
+inline uint32_t get_position_from_group(
         const group_t* group, ky_t &key, ky_t* keys,
-        ky_t* dev_key, int_t* dev_pos,
-        cudaStream_t &stream_left, cudaStream_t &stream_mid, cudaStream_t &stream_right, 
-        ky_t* buffer_left, ky_t* buffer_mid, ky_t* buffer_right) {
+        ky_t* dev_key, int_t* dev_pos, ky_t* query_buffer) {
 
 
     // determine query range
@@ -868,22 +913,22 @@ inline ix_size_t get_position_from_group(
         }
     }
 
-    ix_size_t query_start;
-    ix_size_t query_end;
+    uint32_t query_start;
+    uint32_t query_end;
 
-    ix_size_t left;
-    ix_size_t right;
-    ix_size_t mid;
+    uint32_t left;
+    uint32_t right;
+    uint32_t mid;
 
-    ix_size_t querysize;
+    uint32_t querysize;
 
     // shift query borders
-    if ((int64_t) (prediction - group->left_err) < (int64_t) group->start || prediction - group->left_err < 0) {
+    if ((int64_t) (prediction - group->left_err) - 1 < (int64_t) group->start || prediction - group->left_err - 1 < 0) {
         query_start = group->start;
-    } else if ((int64_t) (prediction - group->left_err) > (int64_t) (group->start + group->m)) {
+    } else if ((int64_t) (prediction - group->left_err) - 1 > (int64_t) (group->start + group->m)) {
         return group->start + group->m - 1;
     } else {
-        query_start = (ix_size_t) (prediction - group->left_err);
+        query_start = (uint32_t) (prediction - group->left_err) - 1;
     }
     if ((int64_t) ceil(prediction - group->right_err) + 1 < (int64_t) group->start || ceil(prediction - group->right_err) + 1 < 0) {
         return group->start;
@@ -909,30 +954,30 @@ inline ix_size_t get_position_from_group(
 
         // kernel indices
         if (query_end - query_start <= QUERYSIZE) {
-            left = ix_max;
-            right = ix_max;
+            left = UINT32_MAX;
+            right = UINT32_MAX;
             mid = query_start;
         } else if (query_end - query_start <= 2 * QUERYSIZE) {
             if (prediction < query_start + QUERYSIZE) {
-                left = ix_max;
+                left = UINT32_MAX;
                 mid = query_start;
                 right = query_start + QUERYSIZE;
             } else {
                 left = query_start;
                 mid = query_end - QUERYSIZE;
-                right = ix_max;
+                right = UINT32_MAX;
             }
         } else {
             if (prediction - query_start < 0.5 * QUERYSIZE) {
-                left = ix_max;
+                left = UINT32_MAX;
                 mid = query_start;
                 right = (query_end + mid + QUERYSIZE) / 2;
             } else if (query_end - prediction < 0.5 * QUERYSIZE) {
-                right = ix_max;
+                right = UINT32_MAX;
                 mid = query_end - QUERYSIZE - 1;
                 left = (mid + query_start - QUERYSIZE) / 2;
             } else {
-                mid = (ix_size_t) (prediction - QUERYSIZE / 2);
+                mid = (uint32_t) (prediction - QUERYSIZE / 2);
                 querysize = (mid - query_start < QUERYSIZE) ? mid - query_start : QUERYSIZE;
                 left = (mid + query_start - querysize) / 2;
                 querysize = (query_end - mid < QUERYSIZE) ? query_end - mid : QUERYSIZE;
@@ -941,20 +986,16 @@ inline ix_size_t get_position_from_group(
         }
 
 
-        QueryStatus result;
-        if (right != ix_max) {
+        if (right != UINT32_MAX) {
             querysize = (right - mid < QUERYSIZE) ? right - mid : QUERYSIZE;
         } else {
             querysize = (query_end - mid < QUERYSIZE) ? query_end - mid : QUERYSIZE;
         }
-        assert(cudaMemcpyAsync(buffer_mid, keys + mid, querysize * sizeof(ky_t), cudaMemcpyHostToDevice, stream_mid) == cudaSuccess);
 
         hst_pos = query_range(
             dev_key, key, keys,
             query_start, query_end,
-            left, mid, right,
-            &stream_left, &stream_mid, &stream_right,
-            buffer_left, buffer_mid, buffer_right,
+            left, mid, right, query_buffer,
             querysize, dev_pos, hst_pos
         );
     }
@@ -963,24 +1004,22 @@ inline ix_size_t get_position_from_group(
 }
 
 
-inline ix_size_t get_position_from_index(
+inline uint32_t get_position_from_index(
         const index_t* index, ky_t &key, ky_t* keys,
-        ky_t* dev_key, int_t* dev_pos,
-        cudaStream_t &stream_left, cudaStream_t &stream_mid, cudaStream_t &stream_right, 
-        ky_t* buffer_left, ky_t* buffer_mid, ky_t* buffer_right) {
+        ky_t* dev_key, int_t* dev_pos, ky_t* query_buffer) {
     
-    int_t hst_pos = int_max;
+    int_t hst_pos = UINT32_MAX;
 
     assert(cudaMemcpy(dev_key, &key, sizeof(ky_t), cudaMemcpyHostToDevice) == cudaSuccess);
 
-    ix_size_t query_start;
-    ix_size_t query_end;
+    uint32_t query_start;
+    uint32_t query_end;
 
-    ix_size_t left;
-    ix_size_t right;
-    ix_size_t mid;
+    uint32_t left;
+    uint32_t right;
+    uint32_t mid;
 
-    ix_size_t querysize;
+    uint32_t querysize;
     if (index->root_n > 0) {
         
         query_start = 0;
@@ -992,31 +1031,28 @@ inline ix_size_t get_position_from_index(
 
             // kernel indices
             if (query_end - query_start <= QUERYSIZE) {
-                left = ix_max;
-                right = ix_max;
+                left = UINT32_MAX;
+                right = UINT32_MAX;
                 mid = query_start;
             } else if (query_end - query_start <= 2 * QUERYSIZE) {
-                left = ix_max;
+                left = UINT32_MAX;
                 mid = query_start;
                 right = query_end - QUERYSIZE;
             } else {
-                mid = (ix_size_t) (query_end - query_start - QUERYSIZE / 2);
+                mid = (uint32_t) (query_end - query_start - QUERYSIZE / 2);
                 left = (mid + query_start - QUERYSIZE) / 2;
                 right = (query_end + mid + QUERYSIZE) / 2;
             }
 
-            if (right != ix_max) {
+            if (right != UINT32_MAX) {
                 querysize = (right - mid < QUERYSIZE) ? right - mid : QUERYSIZE;
             } else {
                 querysize = (query_end - mid < QUERYSIZE) ? query_end - mid : QUERYSIZE;
             }
-            assert(cudaMemcpyAsync(buffer_mid, ((ky_t*) index->root_pivots) + mid, querysize * sizeof(ky_t), cudaMemcpyHostToDevice, stream_mid) == cudaSuccess);
             hst_pos = query_range(
                 dev_key, key, index->root_pivots,
                 query_start, query_end,
-                left, mid, right,
-                &stream_left, &stream_mid, &stream_right,
-                buffer_left, buffer_mid, buffer_right,
+                left, mid, right, query_buffer,
                 querysize, dev_pos, hst_pos
             );
         }
@@ -1028,20 +1064,75 @@ inline ix_size_t get_position_from_index(
     group_t* root = index->roots + hst_pos;
 
     hst_pos = get_position_from_group(
-        root, key, index->group_pivots, dev_key, dev_pos,
-        stream_left, stream_mid, stream_right,
-        buffer_left, buffer_mid, buffer_right    
+        root, key, index->group_pivots, dev_key, dev_pos, query_buffer  
     );
 
     group_t* group = index->groups + hst_pos;
 
     hst_pos = get_position_from_group(
-        group, key, keys, dev_key, dev_pos,
-        stream_left, stream_mid, stream_right,
-        buffer_left, buffer_mid, buffer_right    
+        group, key, keys, dev_key, dev_pos,query_buffer
     );
 
     return hst_pos;
 
 }
+
+
+inline uint32_t query_range2(
+        ky_t &key, ky_t* keys,
+        uint32_t query_start, uint32_t query_end) {
+
+
+    uint32_t pos = UINT32_MAX;
+    __m256i reg;
+    // magic number 16 <- 512 register / 32 integer
+    //alignas(8) int_t pos_reg[8];
+    //alignas(8) int_t pos_max[8] = { UINT32_MAX };
+
+    auto pos_reg = static_cast<uint32_t*>(_mm_malloc(8 , 32));
+    //auto pos_reg = static_cast<uint32_t*>(_mm_malloc(8 , 32));
+
+
+    #pragma omp parallel num_threads(CPUCORES)
+    while (query_end - query_start < CPUCORES || true) {
+
+        uint32_t thr_blk_len = safe_division(query_end - query_start, CPUCORES);
+        uint32_t wrp_blk_len = safe_division(thr_blk_len, 8);
+        
+        #pragma omp for reduction(min:pos)
+        for (uint32_t thread_i = 0; thread_i < CPUCORES; ++thread_i) {
+
+            memset(pos_reg, 0xFF, 8 * sizeof(uint32_t));
+            for (uint8_t warp_i = 0; warp_i < 8; ++warp_i) {
+                if (memcmp(*(keys + i) + thread_i, &key, sizeof(ky_t)) <=) {
+                    *(pos_reg + warp_i) =
+                        query_start +
+                        thread_i * thr_blk_len +
+                        warp_i   * wrp_blk_len;
+                }
+            }
+
+            reg = _mm256_load_si256((__m256i*) pos_reg);
+            for (uint8_t warp_i = 0; warp_i < 8; ++warp_i) {
+                printf("%u", pos_reg[warp_i]);
+            }
+
+            uint32_t i = query_start + thread_i * thr_blk_len;
+            int8_t cmp = memcmp(*(keys + i) + thread_i, &key, sizeof(ky_t));
+            if (cmp >= 0) {
+                pos = std::min(pos, query_start + thread_i * thr_blk_len);
+            }
+        }
+        _mm256_store_si256((__m256i*) pos_reg, reg);
+    }
+
+    return pos;
+}
+
+inline uint32_t get_position_from_index2(const index_t* index, ky_t &key, ky_t* keys) {
+    //query_range2(key, index->root_pivots, 0, index->root_n);
+    query_range2(key, index->group_pivots, 0, index->group_n);
+}
+
+
 #endif  // _SINDEX_
