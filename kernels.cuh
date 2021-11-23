@@ -11,27 +11,29 @@
 
 
 
-__global__ void print_kernel(const ky_t* array, uint32_t len) {
+__global__ void print_kernel(const ky_t* array, uint32_t start, uint32_t len) {
+    array += start;
     const uint32_t thid = blockDim.x * blockIdx.x + threadIdx.x;
     const ky_t* key = (ky_t*) array + thid;
     if (thid < len)
-        printf("%u: %c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c\n",(uint16_t) thid,
-            *(((ch_t*) key) + 0),
-            *(((ch_t*) key) + 1),
-            *(((ch_t*) key) + 2),
-            *(((ch_t*) key) + 3),
-            *(((ch_t*) key) + 4),
-            *(((ch_t*) key) + 5),
-            *(((ch_t*) key) + 6),
-            *(((ch_t*) key) + 7),
-            *(((ch_t*) key) + 8),
-            *(((ch_t*) key) + 9),
-            *(((ch_t*) key) + 10),
-            *(((ch_t*) key) + 11),
-            *(((ch_t*) key) + 12),
-            *(((ch_t*) key) + 13),
-            *(((ch_t*) key) + 14),
-            *(((ch_t*) key) + 15)
+        printf("%u: %c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c\n",(uint32_t) start + thid,
+
+            *(((ch_t*) *key) + 16 + 0),
+            *(((ch_t*) *key) + 16 + 1),
+            *(((ch_t*) *key) + 16 + 2),
+            *(((ch_t*) *key) + 16 + 3),
+            *(((ch_t*) *key) + 16 + 4),
+            *(((ch_t*) *key) + 16 + 5),
+            *(((ch_t*) *key) + 16 + 6),
+            *(((ch_t*) *key) + 16 + 7),
+            *(((ch_t*) *key) + 16 + 8),
+            *(((ch_t*) *key) + 16 + 9),
+            *(((ch_t*) *key) + 16 + 10),
+            *(((ch_t*) *key) + 16 + 11),
+            *(((ch_t*) *key) + 16 + 12),
+            *(((ch_t*) *key) + 16 + 13),
+            *(((ch_t*) *key) + 16 + 14),
+            *(((ch_t*) *key) + 16 + 15)
         );
 }
 
@@ -39,19 +41,21 @@ __global__ void pair_prefix_kernel(
         const ky_t* keys, ky_size_t* dev_pair_lens, uint32_t batch_len) {
     
     const uint32_t thid = blockDim.x * blockIdx.x + threadIdx.x;
-    //if (!thid) printf("batchlen: %'d\n", batch_len);
+    //if (!thid) printf("batchlen: %u\n", batch_len);
 
     for (uint32_t thid_i = thid; thid_i < batch_len - 1; thid_i += gridDim.x * blockDim.x) {
-        ky_t* key1 = (ky_t*) keys + thid_i;
-        ky_t* key2 = (ky_t*) keys + thid_i + 1;
+        //ky_t* key1 = (ky_t*) keys + thid_i;
+        //ky_t* key2 = (ky_t*) keys + thid_i + 1;
         ky_size_t prefix_len = ky_size_max;
+
+        const ky_t* key1 = keys + thid_i;
+        const ky_t* key2 = keys + thid_i + 1;
         for (ky_size_t char_i = 0; char_i < KEYLEN; ++char_i) {
             
-            ch_t char1 = *(((ch_t*) key1) + char_i);
-            ch_t char2 = *(((ch_t*) key2) + char_i);
+            ch_t char1 = *(((ch_t*) *key1) + char_i);
+            ch_t char2 = *(((ch_t*) *key2) + char_i);
 
-
-            //printf("[pair_prefix_kernel] c1: %c c2: %c\n", char1, char2);
+            
             if (char1 != char2) {
                 prefix_len = char_i;
                 break;
@@ -66,7 +70,7 @@ __global__ void pair_prefix_kernel(
 
 
 __global__ void rmq_kernel(
-        const ky_size_t* dev_pair_lens, const uint32_t start_i, const uint32_t m_star,
+        const ky_size_t* dev_pair_lens, const uint32_t start_i, const uint32_t m_1_star,
         int_t* dev_min_len, int_t* dev_max_len, fp_t step) {
     
     dev_pair_lens += start_i;
@@ -79,9 +83,16 @@ __global__ void rmq_kernel(
   
     __syncthreads();
     // iterate batch in strides
-    for (uint32_t thid_i = thid; thid_i < m_star; thid_i += gridDim.x * blockDim.x) {
+    for (uint32_t thid_i = thid; thid_i < m_1_star; thid_i += gridDim.x * blockDim.x) {
 
-        ky_size_t len = *(dev_pair_lens + ((uint32_t) (thid_i * step)));
+        uint32_t key_i0 = (uint32_t) (((fp_t) thid_i) * step);
+        //if ((uint32_t)thid_i != key_i0) printf("rmq\t%u\t%u\n", thid_i, key_i0);
+        //if (thid_i == 500 && thid_i != key_i0) printf("rmq\t%u\t%u\n", thid_i, key_i0);
+
+
+        //if (thid_i == m_1_star - 1)
+        //printf("thid:\t%u,\t%u\n", (uint32_t) thid_i, start_i + ((uint32_t) (thid_i * step)));
+        ky_size_t len = *(dev_pair_lens + key_i0);
         if (len != ky_size_max) {
             loc_min_len = loc_max_len = len;
         }
@@ -93,7 +104,7 @@ __global__ void rmq_kernel(
             ky_size_t tmp_min_len = __shfl_down_sync(0xFFFFFFFF, loc_min_len, offset);
             ky_size_t tmp_max_len = __shfl_down_sync(0xFFFFFFFF, loc_max_len, offset);
 
-            if (threadIdx.x % (offset * 2) == 0 && thid_i + offset < m_star && threadIdx.x % 32 + offset < 32) {
+            if (threadIdx.x % (offset * 2) == 0 && thid_i + offset < m_1_star && threadIdx.x % 32 + offset < 32) {
                 
                 // min
                 if (tmp_min_len < loc_min_len ) {
@@ -125,7 +136,7 @@ __global__ void rmq_kernel(
         // reduce each block to a single value
         for (uint32_t offset = 32; offset < blockDim.x; offset *= 2) {
             __syncthreads();
-            if (threadIdx.x % (offset * 2) == 0 && thid_i + offset < m_star && threadIdx.x + offset < blockDim.x) {
+            if (threadIdx.x % (offset * 2) == 0 && thid_i + offset < m_1_star && threadIdx.x + offset < blockDim.x) {
 
                 shrd_mmry_j = (threadIdx.x + offset) / 32;
 
@@ -163,14 +174,17 @@ __global__ void column_major_kernel(
     for (uint32_t thid_i = thid; thid_i < m_star * n_tilde; thid_i += gridDim.x * blockDim.x) {
 
         uint32_t key_i =  thid_i / n_tilde;
-        ky_size_t feat_i = (thid_i % n_tilde);
+        ky_size_t feat_i = (((uint32_t) thid_i) % n_tilde);
         ky_size_t char_i;
-        
+
+        uint32_t key_i0 = (uint32_t) (((fp_t) key_i) * step);
+
         //if(!feat_i) printf("key_i %u, step %f, key: %u\n",(uint8_t) (key_i), (float) step,(uint32_t) (key_i * step));
 
         if (feat_i < n_tilde - 1) {
             char_i = *(feat_indices + feat_i);
-            *(A + feat_i * m_star + key_i) = (fp_t) *(((ch_t*) *(keys + ((uint32_t) (key_i * step)))) + char_i);
+            *(A + feat_i * m_star + key_i) =
+                (fp_t) *(((ch_t*) *(keys + key_i0)) + char_i);
         } else {
             *(A + feat_i * m_star + key_i) = bias;
         }
@@ -193,7 +207,9 @@ __global__ void set_postition_kernel(
     const uint32_t thid = blockDim.x * blockIdx.x + threadIdx.x;
     for (uint32_t thid_i = thid; thid_i < m_star; thid_i += gridDim.x * blockDim.x) {
 
-        *(B + thid_i) = processed + start_i + ((uint32_t) (thid_i * step));
+        uint32_t key_i0 = (uint32_t) (((fp_t) thid_i) * step);
+
+        *(B + thid_i) = processed + start_i + key_i0;
 
     }
 }
@@ -284,15 +300,18 @@ __global__ void equal_column_kernel_old(
 
 __global__ void equal_column_kernel(
         ky_t* keys, uint32_t start_i, ky_size_t feat_start,
-        uint32_t m_star, ky_size_t n_star,
+        uint32_t m_1_star, ky_size_t n_star,
         int_t* uneqs, fp_t step) {
 
     keys += start_i;
     const uint32_t thid = blockDim.x * blockIdx.x + threadIdx.x;
 
     if (thid < n_star) {
-        for (uint32_t key_i = 0; key_i < m_star - 1; ++key_i) {
-            if (*(((ch_t*) *(keys + ((uint32_t) (key_i * step)))) + feat_start + thid) != *(((ch_t*) *(keys + ((uint32_t) ((key_i + 1) * step)))) + feat_start + thid)) {
+        for (uint32_t key_i = 0; key_i < m_1_star; ++key_i) {
+            uint32_t key_i0 = (uint32_t) (((fp_t) key_i) * step);
+
+            if (*(((ch_t*) *(keys + key_i0)) + feat_start + thid) !=
+                *(((ch_t*) *(keys + key_i0 + 1)) + feat_start + thid)) {
                 *(uneqs + thid) = 1;
                 break;
             }
@@ -330,6 +349,9 @@ __global__ void model_error_kernel(
 
         // subtract actual position (key error)
         loc_acc_err -= (processed + start_i + thid_i);
+
+        //if (thid_i == m-1)
+        //printf("%u\terr:\t%f\n", thid_i, loc_acc_err);
 
         //if (thid_i == 9966) printf("%f\n", loc_acc_err);
         //printf("key_i: %'d, key_err: %f\n", (uint16_t)thid_i, loc_acc_err);

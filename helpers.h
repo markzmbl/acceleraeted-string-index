@@ -12,19 +12,39 @@
 #ifndef _HELPERS_
 #define _HELPERS_
 
-uint32_t read_keys(ky_t* keys, const std::string filename) {
+inline void print_key(const ky_t* key) {
+    for(ky_size_t char_i = 0; char_i < KEYSIZE; ++char_i) {
+        ch_t char0 = *(((ch_t*)*key) + char_i);
+        printf("%c", (char) char0);
+    }
+    printf("\n");
+}
+
+inline void print_keys(const ky_t* keys, size_t start, size_t len) {
+    for (size_t key_i = start; key_i < start + len; ++key_i) {
+        print_key(keys + key_i);
+    }
+}
+
+void read_keys(const std::string filename, ky_t* &keys,
+        int64_t &numkeys, uint32_t step) {
 
     std::string line;
     std::ifstream data(filename);
 
+    numkeys = 0;
     uint32_t key_i = 0;
     while(std::getline(data, line)) {
-        line = line.substr(0, KEYLEN);
-        memcpy(keys + key_i, line.c_str(), KEYLEN);
+        if (key_i % step == 0) {
+            line = line.substr(0, KEYLEN);
+            memcpy(keys + numkeys, line.c_str(), KEYLEN);
+            ++numkeys;
+        }
         ++key_i;
     }
     data.close();
-    return key_i;
+
+
 }
 
 inline void print_group(int num, group_t group) {
@@ -50,19 +70,6 @@ inline void print_group(int num, group_t group) {
     );
 }
 
-inline void print_key(const ky_t* key) {
-    for(ky_size_t char_i = 0; char_i < KEYSIZE; ++char_i) {
-        ch_t char0 = *(((ch_t*)key) + char_i);
-        printf("%c", (char) char0);
-    }
-    printf("\n");
-}
-
-inline void print_keys(const ky_t* keys, size_t start, size_t len) {
-    for (size_t key_i = start; key_i < start + len; ++key_i) {
-        print_key(keys + key_i);
-    }
-}
 
 inline bool nearly_equal(fp_t a, fp_t b) {
     const fp_t abs_a = abs(a);
@@ -120,39 +127,43 @@ inline void swap_buffer_and_stream(
 
 }
 
-inline void serialize(index_t &index, char filename[]) {
+inline void serialize(index_t* index, const char filename[]) {
     FILE* file;
-    file = fopen(filename,"wb");
-    fwrite(&(index.root_n), sizeof(uint32_t), 1, file);
-    fwrite(&(index.group_n), sizeof(uint32_t), 1, file);
-    fwrite(index.root_pivots, sizeof(ky_t), index.root_n, file);
-    fwrite(index.group_pivots, sizeof(ky_t), index.group_n, file);
+    file = fopen(filename, "wb");
+
+    fwrite(&(index->n), sizeof(uint32_t), 1, file);
+    fwrite(&(index->root_n), sizeof(uint32_t), 1, file);
+    fwrite(&(index->group_n), sizeof(uint32_t), 1, file);
+    fwrite(index->root_pivots, sizeof(ky_t), index->root_n, file);
+    fwrite(index->group_pivots, sizeof(ky_t), index->group_n, file);
 
 
-    for (uint32_t group_i = 0; group_i < index.root_n + index.group_n; ++group_i) {
+    for (uint32_t group_i = 0; group_i < index->root_n + index->group_n; ++group_i) {
         group_t* group;
-        if (group_i < index.root_n) {
-            group = index.roots + group_i;
+        if (group_i < index->root_n) {
+            group = index->roots + group_i;
         } else {
-            group = index.groups + group_i - index.root_n;
+            group = index->groups + group_i - index->root_n;
         }
         fwrite(&(group->start), sizeof(uint32_t), 1, file);
         fwrite(&(group->m), sizeof(uint32_t), 1, file);
         fwrite(&(group->n), sizeof(ky_size_t), 1, file);
         fwrite(group->feat_indices, sizeof(ky_size_t), group->n, file);
         fwrite(group->weights, sizeof(fp_t), group->n + 1, file);
-        fwrite(&(group->avg_err), sizeof(fp_t), 1, file);
+        //fwrite(&(group->avg_err), sizeof(fp_t), 1, file);
         fwrite(&(group->left_err), sizeof(fp_t), 1, file);
         fwrite(&(group->right_err), sizeof(fp_t), 1, file);
-        fwrite(&(group->fsteps), sizeof(unsigned int), 1, file);
-        fwrite(&(group->bsteps), sizeof(unsigned int), 1, file);
+        //fwrite(&(group->fsteps), sizeof(unsigned int), 1, file);
+        //fwrite(&(group->bsteps), sizeof(unsigned int), 1, file);
    }
+   fclose(file);
 }
 
-inline index_t* deserialize(char filename[]) {
+inline index_t* deserialize(const char filename[]) {
     FILE* file;
     file = fopen(filename,"rb");
     index_t* index = (index_t*) malloc(sizeof(index_t));
+    fread(&(index->n), sizeof(uint32_t), 1, file);
     fread(&(index->root_n), sizeof(uint32_t), 1, file);
     fread(&(index->group_n), sizeof(uint32_t), 1, file);
 
@@ -166,7 +177,7 @@ inline index_t* deserialize(char filename[]) {
     fread(index->group_pivots, sizeof(ky_t), index->group_n, file);
 
 
-    for (uint32_t group_i = 0; group_i < index->group_n; ++group_i) {
+    for (uint32_t group_i = 0; group_i < index->root_n + index->group_n; ++group_i) {
         group_t* group = (group_t*) malloc(sizeof(group_t));
         fread(&(group->start), sizeof(uint32_t), 1, file);
         fread(&(group->m), sizeof(uint32_t), 1, file);
@@ -175,11 +186,11 @@ inline index_t* deserialize(char filename[]) {
         fread(group->feat_indices, sizeof(ky_size_t), group->n, file);
         group->weights = (fp_t*) malloc((group->n + 1) * sizeof(fp_t));
         fread(group->weights, sizeof(fp_t), group->n + 1, file);
-        fread(&(group->avg_err), sizeof(fp_t), 1, file);
+        //fread(&(group->avg_err), sizeof(fp_t), 1, file);
         fread(&(group->left_err), sizeof(fp_t), 1, file);
         fread(&(group->right_err), sizeof(fp_t), 1, file);
-        fread(&(group->fsteps), sizeof(unsigned int), 1, file);
-        fread(&(group->bsteps), sizeof(unsigned int), 1, file);
+        //fread(&(group->fsteps), sizeof(unsigned int), 1, file);
+        //fread(&(group->bsteps), sizeof(unsigned int), 1, file);
 
         if (group_i < index->root_n) {
             *(index->roots + group_i) = *group;
@@ -187,6 +198,7 @@ inline index_t* deserialize(char filename[]) {
             *(index->groups + group_i - index->root_n) = *group;
         }
     }
+    fclose(file);
     return index;
 }
 
@@ -220,26 +232,19 @@ inline void calculate_cusolver_buffer_size(cusolverDnHandle_t* cusolverH, cusolv
     *h_work_size = h_work_size_qr;
 }
 
-inline void split_array(ky_t* array, uint32_t len, ky_t* pivots, uint32_t num) {
-
-    //std::vector<std::thread> threads;
-    uint32_t interval = safe_division(len, num);
-    #pragma omp parallel for num_threads(CPUCORES)
-    for (uint32_t thread_i = 0; thread_i < num; ++thread_i) {
-        memcpy(pivots + thread_i, array + thread_i * interval, sizeof(ky_t));
+//https://stackoverflow.com/questions/865668/parsing-command-line-arguments-in-c
+char* getCmdOption(char ** begin, char ** end, const std::string & option)
+{
+    char ** itr = std::find(begin, end, option);
+    if (itr != end && ++itr != end)
+    {
+        return *itr;
     }
-    //for (uint32_t thread_i = 0; thread_i < num; ++thread_i) {
-    //    threads.emplace_back(
-    //        [&] () -> void
-    //        {
-    //            memcpy(pivots + thread_i, array + thread_i * interval, sizeof(ky_t));
-    //        }
-    //    );
-    //}
-    //for (auto& thread : threads)
-    //    thread.join();
+    return 0;
 }
-
-
+bool cmdOptionExists(char** begin, char** end, const std::string& option)
+{
+    return std::find(begin, end, option) != end;
+}
 
 #endif  // _HELPERS_

@@ -7,6 +7,9 @@ CMakeCache.txt
 compile_commands.json
 microbench
 mybench
+*.csv
+*.png
+*.bin
 *.log
 *.txt
 *.old

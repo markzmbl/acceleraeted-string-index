@@ -9,6 +9,8 @@
 #include <omp.h>
 #include <thread>
 
+
+
 inline uint64_t safe_division(uint64_t divident, uint64_t divisor) {
     return (uint64_t) (divident + divisor - 1) / divisor;
 }
@@ -66,14 +68,14 @@ int get_block_size(cudaDeviceProp prop, int cudacores) {
 
 
 // return enum
-enum GroupStatus {threshold_success, threshold_exceed, out_of_memory, batch_exceed, finished};
-enum QueryStatus {found_target, target_right, target_left};
+enum GroupStatus {threshold_success, threshold_exceed, out_of_memory, batch_exceed, batch_load, finished};
 
 
 // debug flag
-bool verbose = true;
-const bool debug = true;
-const bool sanity_check = false;
+bool verbose = false;
+bool debug = false;
+bool sanity_check = false;
+bool csv = false;
 
 // gpu specific types
 typedef double fp_t;
@@ -88,7 +90,7 @@ const fp_t eps = 0.2;
 const fp_t bias = 1;
 
 // index size
-const uint32_t NUMKEYS = 200'000'000;
+const uint32_t NUMKEYS = 800'000'000;
 const uint32_t int_max = UINT32_MAX;
 
 // character
@@ -96,12 +98,12 @@ typedef char ch_t;
 
 // key size
 typedef uint8_t ky_size_t;
-const ky_size_t KEYLEN = 1<<4; 
+const ky_size_t KEYLEN = 7; 
 const ky_size_t ky_size_max = UINT8_MAX;
-const ky_size_t KEYSIZE = KEYLEN * sizeof(ch_t);
 
 // key
 typedef ch_t ky_t[KEYLEN];
+const ky_size_t KEYSIZE = sizeof(ky_t);
 // group type
 struct group_t {
     uint32_t start;
@@ -118,6 +120,7 @@ struct group_t {
 
 // index type
 struct index_t {
+    uint32_t n;
     uint32_t root_n;
     group_t* roots;
     uint32_t group_n;

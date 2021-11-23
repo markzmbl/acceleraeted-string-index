@@ -34,7 +34,7 @@ inline GroupStatus calculate_group(
     ky_size_t n_tilde = 0;
     int host_info = 0;
     const fp_t one = 1;
-    fp_t host_acc_error = 0;
+    fp_t host_acc_error = 0.0;
     fp_t host_min_error = float_max;
     fp_t host_max_error = -float_max;
     fp_t avg_error = 0;
@@ -56,7 +56,6 @@ inline GroupStatus calculate_group(
     // sanity check variables
     fp_t* hst_A;
     fp_t* hst_B;
-
     // reset min and max to neutral values
     assert(cudaMemcpy(dev_min_len, &int_max, sizeof(int_t), cudaMemcpyHostToDevice) == cudaSuccess);
     assert(cudaMemset(dev_max_len, 0,       sizeof(int_t)) == cudaSuccess);
@@ -133,8 +132,8 @@ inline GroupStatus calculate_group(
     // -- determine if columns are unequal
     assert(cudaMemset(dev_uneqs, 0, n_star * sizeof(int_t)) == cudaSuccess);
     equal_column_kernel
-        <<<get_block_num(m_star * n_star), BLOCKSIZE, BLOCKSIZE / 32 * (sizeof(ch_t) + sizeof(int_t))>>>
-        (dev_keys, start_i, host_min_len, m_star, n_star, dev_uneqs, step);
+        <<<get_block_num(m_1_star * n_star), BLOCKSIZE, BLOCKSIZE / 32 * (sizeof(ch_t) + sizeof(int_t))>>>
+        (dev_keys, start_i, host_min_len, m_1_star, n_star, dev_uneqs, step);
     assert(cudaGetLastError() == cudaSuccess);
 
     // copy results back
@@ -173,13 +172,14 @@ inline GroupStatus calculate_group(
                 "\tstart:\t%'d\n"
                 "\tm:\t%'d\n"
                 "\tn:\t%'d\n",
-                start_i,
+                processed + start_i,
                 m,
                 n
             );
         }
-        assert(cudaFreeHost(hst_uneqs) == cudaSuccess);
         return threshold_exceed;
+    } else if (force) {
+        n = min(feat_thresh, n);
     }
 
     // take bias into account
@@ -187,7 +187,7 @@ inline GroupStatus calculate_group(
 
     // calculate feat indices
     ky_size_t useful_col_i = 0;
-    for (ky_size_t col_i = 0; col_i < n_star; ++col_i) {
+    for (ky_size_t col_i = 0; col_i < n_star && useful_col_i < n; ++col_i) {
         if (hst_uneqs[col_i] == true) {
             hst_feat_indices[useful_col_i] = host_min_len + col_i;
             ++useful_col_i;
@@ -268,7 +268,7 @@ inline GroupStatus calculate_group(
         h_work, h_work_size, dev_info
     );
 
-    assert(cudaDeviceSynchronize() == cudaSuccess);
+    //assert(cudaDeviceSynchronize() == cudaSuccess);
     assert(CUSOLVER_STATUS_SUCCESS == cusolver_status);
     // check result
     assert(cudaMemcpy(&host_info, dev_info, sizeof(int), cudaMemcpyDeviceToHost) == cudaSuccess);
@@ -410,6 +410,7 @@ inline GroupStatus calculate_group(
 
     // determine average error
     avg_error = host_acc_error / m;
+    //printf("avg\t%f\n", avg_error);
 
     // check weights threshold
     if (abs(avg_error) > error_thresh && !force) {
@@ -421,7 +422,7 @@ inline GroupStatus calculate_group(
                 "\tm:\t%'d\n"
                 "\terr:\t%.10e\n"
                 "\tn:\t%'d\n",
-                start_i,
+                processed + start_i,
                 m,
                 avg_error,
                 n
@@ -446,9 +447,9 @@ inline GroupStatus calculate_group(
 
 
 inline uint32_t grouping(
-    const ky_t* keys, uint32_t numkeys,
+    const ky_t* keys, int64_t numkeys,
     fp_t et, ky_size_t pt,
-    uint32_t fstep, uint32_t bstep, uint32_t minsize, group_t* &groups,
+    uint32_t fstep, uint32_t bstep, uint32_t minsize, uint32_t batchlen0, group_t* &groups,
     ky_t* dev_keys, ky_size_t* dev_pair_lens, uint32_t maxsamples,
     cusolverDnHandle_t* cusolverH, cusolverDnParams_t* cusolverP, cublasHandle_t* cublasH,
     int_t* dev_min_len, int_t* dev_max_len, fp_t* A, fp_t* B, int_t* hst_uneqs, int_t* dev_uneqs,
@@ -460,12 +461,12 @@ inline uint32_t grouping(
     // sanity check variable
     ky_size_t* hst_pair_lens;
     if (sanity_check) {
-        cudaMallocHost(&hst_pair_lens, (BATCHLEN - 1) * sizeof(ky_size_t));
+        cudaMallocHost(&hst_pair_lens, (batchlen0 - 1) * sizeof(ky_size_t));
     }
 
     uint32_t processed = 0;
-    uint32_t start_i = 0;
-    uint32_t end_i = 0;
+    uint32_t start_i, end_i;
+    start_i = end_i = 0;
 
     std::vector<group_t> group_vector;
     GroupStatus result = threshold_success;
@@ -474,8 +475,8 @@ inline uint32_t grouping(
 
     while (result != finished) {
 
-        uint32_t batchlen = (numkeys - processed < BATCHLEN) ? numkeys - processed : BATCHLEN;
-        assert(cudaMemcpy(dev_keys, keys + processed, batchlen * KEYSIZE, cudaMemcpyHostToDevice) == cudaSuccess);
+        int64_t batchlen = (numkeys - processed < batchlen0) ? numkeys - processed : batchlen0;
+        assert(cudaMemcpy(dev_keys, keys + processed, batchlen * sizeof(ky_t), cudaMemcpyHostToDevice) == cudaSuccess);
         // calculate common prefix lenghts
         pair_prefix_kernel
             <<<get_block_num(batchlen - 1), BLOCKSIZE>>>(dev_keys, dev_pair_lens, batchlen);
@@ -510,12 +511,14 @@ inline uint32_t grouping(
         // while batch is sufficent
         while (result != batch_exceed) {
             
+
             group_t group;
 
             unsigned int fsteps = 0;
             // increase loop
             while (result == threshold_success) {
 
+                bool force = false;
                 // free feature indices and weights values
                 // as group is still expanding
                 // todo: find a more elegant solution
@@ -527,7 +530,7 @@ inline uint32_t grouping(
                             "\tm:\t%'d\n"
                             "\terr:\t%.10e\n"
                             "\tn:\t%'d\n",
-                            start_i,
+                            processed + start_i,
                             group.m,
                             group.avg_err,
                             group.n
@@ -535,8 +538,23 @@ inline uint32_t grouping(
                     }
                 }
 
+                if (start_i == 0 && end_i == batchlen) {
+                    break;
+                }
+
                 end_i += fstep;
-                end_i = (end_i > batchlen) ? batchlen : end_i;
+
+                if (batchlen - end_i < minsize) {
+                    if (start_i == 0 || processed + end_i >= numkeys) {
+                        end_i = batchlen;
+                        if (processed + end_i == numkeys)
+                            force = true;
+                    } else {
+                        result = batch_exceed;
+                        break;
+                    }
+                } 
+
 
                 result = calculate_group(
                     keys, hst_pair_lens, dev_keys, dev_pair_lens, &group,
@@ -544,24 +562,16 @@ inline uint32_t grouping(
                     cusolverH, cusolverP, cublasH,
                     dev_min_len, dev_max_len, A, B, hst_uneqs, dev_uneqs,
                     hst_feat_indices, dev_feat_indices, mutex, tau, dev_info,
-                    d_work, h_work, d_work_size, h_work_size, dev_acc_error, dev_min_error, dev_max_error, false
+                    d_work, h_work, d_work_size, h_work_size, dev_acc_error, dev_min_error, dev_max_error, force
                 );
 
                 assert (result != out_of_memory);
 
                 ++fsteps;
 
-                if (result == threshold_success && end_i == batchlen) {
-                    if (start_i == 0 || processed + end_i == numkeys) {
-                        break; 
-                    } else if (start_i > 0) {
-                        result = batch_exceed;
-                    }
-                    // else result stays threshold success
-                    // since this is the biggest group possible to add
+                if (force == true ) {
                     break;
-                }
-                    
+                }                    
 
             }
             unsigned int bsteps = 0;
@@ -590,9 +600,6 @@ inline uint32_t grouping(
 
                 ++bsteps;
 
-                if (force) {
-                    break;
-                }
             }
 
             if (result == threshold_success) {
@@ -608,24 +615,23 @@ inline uint32_t grouping(
                 }
                 group_vector.push_back(group);
 
-
-
                 start_i = end_i;
+
+                if (processed + end_i == numkeys) {
+                    result = finished;
+                    break;
+                }
             }
 
-            if (end_i == batchlen) {
-                result = batch_exceed;
-            }
         }
 
         // end of batch
         processed += start_i;
+        end_i -= start_i;
+        start_i = 0;
 
-        if (processed == numkeys) {
-            result = finished;
-        } else {
-            end_i -= start_i;
-            start_i = 0;
+        if (result == batch_exceed) {
+            result = threshold_success;
         }
     }
     if (sanity_check) {
@@ -639,8 +645,8 @@ inline uint32_t grouping(
 }
 
 inline index_t* create_index(
-    ky_t* keys, uint32_t numkeys, fp_t et, ky_size_t pt,
-    uint32_t fstep, uint32_t bstep, uint32_t minsize) {
+    ky_t* keys, int64_t numkeys, fp_t et, ky_size_t pt,
+    uint32_t fstep, uint32_t bstep, uint32_t minsize, uint32_t batchlen) {
 
 
 
@@ -678,14 +684,14 @@ inline index_t* create_index(
     fp_t* dev_acc_error;
     fp_t* dev_min_error;
     fp_t* dev_max_error;
-    assert(cudaMallocHost(&hst_uneqs, pt * sizeof(int_t)) == cudaSuccess);
+    assert(cudaMallocHost(&hst_uneqs, KEYLEN * sizeof(int_t)) == cudaSuccess);
     assert(cudaMallocHost(&hst_feat_indices, pt * sizeof(ky_size_t)) == cudaSuccess);
     assert(cudaMallocHost(&weights, (pt + 1) * sizeof(fp_t)) == cudaSuccess);
-    assert(cudaMalloc(&dev_keys, BATCHLEN * KEYSIZE) == cudaSuccess);
-    assert(cudaMalloc(&dev_pair_lens, (BATCHLEN - 1) * sizeof(ky_size_t)) == cudaSuccess);
+    assert(cudaMalloc(&dev_keys, batchlen * sizeof(ky_t)) == cudaSuccess);
+    assert(cudaMalloc(&dev_pair_lens, (batchlen - 1) * sizeof(ky_size_t)) == cudaSuccess);
     assert(cudaMalloc(&dev_min_len, sizeof(int_t)) == cudaSuccess);
     assert(cudaMalloc(&dev_max_len, sizeof(int_t)) == cudaSuccess);
-    assert(cudaMalloc(&dev_uneqs, pt * sizeof(int_t)) == cudaSuccess);
+    assert(cudaMalloc(&dev_uneqs, KEYLEN * sizeof(int_t)) == cudaSuccess);
     assert(cudaMalloc(&dev_feat_indices, pt * sizeof(ky_size_t)) == cudaSuccess);
     assert(cudaMalloc(&mutex, sizeof(int_t)) == cudaSuccess);
     assert(cudaMalloc(&tau, (pt + 1) * sizeof(fp_t)) == cudaSuccess);
@@ -704,7 +710,7 @@ inline index_t* create_index(
     size_t total_space = 0;
     cudaMemGetInfo(&free_space, &total_space);
     // debug video output
-    free_space -= 2'000'000'000;
+    free_space -= 50'000'000;
     // A(maxsamples x (feat_threash + 1)) and B(maxsamples x 1)
     uint32_t maxsamples_max = free_space / ((pt + 2) * sizeof(fp_t));
     uint32_t maxsamples_min = maxsamples_max;
@@ -744,6 +750,10 @@ inline index_t* create_index(
     }
     uint32_t maxsamples = maxsamples_mid;
 
+    printf("[MAXSAMPLES]\t%u\n", maxsamples);
+
+    if (maxsamples > batchlen) maxsamples = batchlen;
+
     assert(cudaMalloc(&A, maxsamples * (pt + 1) * sizeof(fp_t)) == cudaSuccess);
     assert(cudaMalloc(&B, maxsamples * sizeof(fp_t)) == cudaSuccess);
     assert(cudaMalloc(&d_work, d_work_size) == cudaSuccess);
@@ -754,14 +764,14 @@ inline index_t* create_index(
     // ****************
     // grouping of keys
     group_t* groups;
-    uint32_t group_n = grouping(keys, numkeys, et, pt, fstep, bstep, minsize, groups,
+    uint32_t group_n = grouping(keys, numkeys, et, pt, fstep, bstep, minsize, batchlen, groups,
         dev_keys, dev_pair_lens, maxsamples,
         &cusolverH, &cusolverP, &cublasH,
         dev_min_len, dev_max_len, A, B, hst_uneqs,  dev_uneqs,
         hst_feat_indices, dev_feat_indices, mutex, tau, dev_info,
         d_work, h_work, d_work_size, h_work_size, dev_acc_error, dev_min_error, dev_max_error);
     // gather group pivots
-    ky_t group_pivots[group_n];
+    ky_t* group_pivots = (ky_t*) malloc(group_n * sizeof(ky_t));
     for (uint32_t group_i = 0; group_i < group_n; ++group_i) {
         group_t group = *(groups + group_i);
         memcpy(group_pivots + group_i, keys + group.start, sizeof(ky_t));
@@ -770,14 +780,14 @@ inline index_t* create_index(
     group_t* roots;
     uint32_t root_n = 0;
     if (group_n > 1) {
-        root_n = grouping(group_pivots, group_n, et, pt, 10, 5, 5, roots,
+        root_n = grouping(group_pivots, group_n, et, pt, fstep, bstep, minsize, batchlen, roots,
         dev_keys, dev_pair_lens, maxsamples,
         &cusolverH, &cusolverP, &cublasH,
         dev_min_len, dev_max_len, A, B, hst_uneqs,  dev_uneqs,
         hst_feat_indices, dev_feat_indices, mutex, tau, dev_info,
         d_work, h_work, d_work_size, h_work_size, dev_acc_error, dev_min_error, dev_max_error);
     }
-    ky_t root_pivots[root_n];
+    ky_t* root_pivots = (ky_t*) malloc(root_n * sizeof(ky_t));
     // gater root pivots
     if (root_n > 0) {
         for (uint32_t root_i = 0; root_i < root_n; ++root_i) {
@@ -786,7 +796,15 @@ inline index_t* create_index(
         }
     }
     // create index
-    index_t index = { root_n, roots, group_n, groups, root_pivots, group_pivots};
+
+    index_t* index = (index_t*) malloc(sizeof(index_t));
+    index->n = numkeys;
+    index->root_n = root_n;
+    index->roots = roots;
+    index->group_n = group_n;
+    index->groups = groups;
+    index->root_pivots = root_pivots;
+    index->group_pivots = group_pivots;
 
     assert(cudaFree(dev_keys) == cudaSuccess);
     assert(cudaFree(dev_pair_lens) == cudaSuccess);
@@ -807,332 +825,7 @@ inline index_t* create_index(
     assert(cusolverDnDestroyParams(cusolverP) == cudaSuccess);
     assert(cublasDestroy(cublasH) == cudaSuccess);
 
-    return &index;
+    return index;
 }
-
-
-inline uint32_t query_range(
-        ky_t* dev_key, ky_t &key, ky_t* keys,
-        uint32_t query_start, uint32_t query_end,
-        uint32_t left, uint32_t mid, uint32_t right,
-        ky_t* query_buffer, uint32_t querysize,
-        int_t* dev_pos, int_t &hst_pos) {
-
-    QueryStatus result;
-    do {
-
-        assert(cudaMemcpy(query_buffer, keys + mid, querysize * sizeof(ky_t), cudaMemcpyHostToDevice) == cudaSuccess);
-        assert(cudaMemcpy(dev_pos, &int_max, sizeof(int_t), cudaMemcpyHostToDevice) == cudaSuccess);
-        // run kernel for mid buffer in the mean time
-        if (right != UINT32_MAX) {
-            querysize = (right - mid < QUERYSIZE) ? right - mid : QUERYSIZE;
-        } else {
-            querysize = (query_end - mid < QUERYSIZE) ? query_end - mid : QUERYSIZE;
-        }
-        query_kernel
-            <<<get_block_num(querysize), BLOCKSIZE, BLOCKSIZE / 32 * sizeof(int_t)>>>
-            (dev_key, query_buffer, querysize, dev_pos);
-        assert(cudaGetLastError() == cudaSuccess);
-        // get result from mid buffer
-        assert(cudaMemcpy(&hst_pos, dev_pos, sizeof(int_t), cudaMemcpyDeviceToHost) == cudaSuccess);
-
-
-        // evaluate result
-        if (hst_pos != UINT32_MAX) {
-            if (memcmp(&key, keys + mid + hst_pos, sizeof(ky_t)) == 0) {
-                result = found_target;
-                return mid + hst_pos;
-            } else if (hst_pos > 0) {
-                if (memcmp(&key, keys + mid + hst_pos, sizeof(ky_t)) < 0) {
-                    --hst_pos;
-                }
-                result = found_target;
-                return mid + hst_pos;
-            } else {
-                result = target_left;
-            }
-        } else {
-            result = target_right;
-        }
-
-        if (result != found_target) {
-            switch (result) {
-                case target_left:
-                    query_end = mid;
-                    mid = left;
-                    break;
-                
-                case target_right:
-                    query_start = mid + QUERYSIZE;
-                    mid = right;
-                    break;
-            }
-
-            if (query_end - query_start <= QUERYSIZE) {
-                if (mid > query_start) {
-                    left = query_start;
-                } else {
-                    left = UINT32_MAX;
-                }
-                right = UINT32_MAX;
-            } else if (query_end - query_start <= 2 * QUERYSIZE) {
-                if (query_start < mid) {
-                    left = query_start;
-                } else {
-                    left = UINT32_MAX;
-                }
-                if (query_start + QUERYSIZE < mid) {
-                    right = query_start + QUERYSIZE;
-                } else {
-                    right = UINT32_MAX;
-                }
-            } else {
-                left = (mid + query_start - QUERYSIZE) / 2;
-                right = (query_end + mid + QUERYSIZE) / 2;
-            }
-        }
-
-    } while (result != found_target);
-}
-
-inline uint32_t get_position_from_group(
-        const group_t* group, ky_t &key, ky_t* keys,
-        ky_t* dev_key, int_t* dev_pos, ky_t* query_buffer) {
-
-
-    // determine query range
-    fp_t prediction = 0;
-    for (ky_size_t feat_i = 0; feat_i < group->n + 1; ++feat_i) {
-        if (feat_i == group->n) {
-            prediction += *(group->weights + feat_i);
-        } else {
-            ky_size_t char_i = *(group->feat_indices + feat_i);
-            ch_t character = *(((ch_t*) key) + char_i);
-            fp_t weight = *(group->weights + feat_i);
-            prediction += weight * ((fp_t) character);
-        }
-    }
-
-    uint32_t query_start;
-    uint32_t query_end;
-
-    uint32_t left;
-    uint32_t right;
-    uint32_t mid;
-
-    uint32_t querysize;
-
-    // shift query borders
-    if ((int64_t) (prediction - group->left_err) - 1 < (int64_t) group->start || prediction - group->left_err - 1 < 0) {
-        query_start = group->start;
-    } else if ((int64_t) (prediction - group->left_err) - 1 > (int64_t) (group->start + group->m)) {
-        return group->start + group->m - 1;
-    } else {
-        query_start = (uint32_t) (prediction - group->left_err) - 1;
-    }
-    if ((int64_t) ceil(prediction - group->right_err) + 1 < (int64_t) group->start || ceil(prediction - group->right_err) + 1 < 0) {
-        return group->start;
-    } else if ((int64_t) ceil(prediction - group->right_err) + 1 > (int64_t) (group->start + group->m)) {
-        query_end = group->start + group->m;
-    } else {
-        query_end = ceil(prediction - group->right_err) + 1;
-    }
-
-    int_t hst_pos;
-
-    if (query_start == query_end - 1) {
-        hst_pos = query_start;
-    } else {
-
-
-        if (prediction < group->start) {
-            prediction = group->start;
-        } else if (prediction >= group->start + group->m) {
-            prediction = group->start + group->m - 1;
-        }
-
-
-        // kernel indices
-        if (query_end - query_start <= QUERYSIZE) {
-            left = UINT32_MAX;
-            right = UINT32_MAX;
-            mid = query_start;
-        } else if (query_end - query_start <= 2 * QUERYSIZE) {
-            if (prediction < query_start + QUERYSIZE) {
-                left = UINT32_MAX;
-                mid = query_start;
-                right = query_start + QUERYSIZE;
-            } else {
-                left = query_start;
-                mid = query_end - QUERYSIZE;
-                right = UINT32_MAX;
-            }
-        } else {
-            if (prediction - query_start < 0.5 * QUERYSIZE) {
-                left = UINT32_MAX;
-                mid = query_start;
-                right = (query_end + mid + QUERYSIZE) / 2;
-            } else if (query_end - prediction < 0.5 * QUERYSIZE) {
-                right = UINT32_MAX;
-                mid = query_end - QUERYSIZE - 1;
-                left = (mid + query_start - QUERYSIZE) / 2;
-            } else {
-                mid = (uint32_t) (prediction - QUERYSIZE / 2);
-                querysize = (mid - query_start < QUERYSIZE) ? mid - query_start : QUERYSIZE;
-                left = (mid + query_start - querysize) / 2;
-                querysize = (query_end - mid < QUERYSIZE) ? query_end - mid : QUERYSIZE;
-                right = (query_end + mid + querysize) / 2;
-            }
-        }
-
-
-        if (right != UINT32_MAX) {
-            querysize = (right - mid < QUERYSIZE) ? right - mid : QUERYSIZE;
-        } else {
-            querysize = (query_end - mid < QUERYSIZE) ? query_end - mid : QUERYSIZE;
-        }
-
-        hst_pos = query_range(
-            dev_key, key, keys,
-            query_start, query_end,
-            left, mid, right, query_buffer,
-            querysize, dev_pos, hst_pos
-        );
-    }
-
-    return hst_pos;
-}
-
-
-inline uint32_t get_position_from_index(
-        const index_t* index, ky_t &key, ky_t* keys,
-        ky_t* dev_key, int_t* dev_pos, ky_t* query_buffer) {
-    
-    int_t hst_pos = UINT32_MAX;
-
-    assert(cudaMemcpy(dev_key, &key, sizeof(ky_t), cudaMemcpyHostToDevice) == cudaSuccess);
-
-    uint32_t query_start;
-    uint32_t query_end;
-
-    uint32_t left;
-    uint32_t right;
-    uint32_t mid;
-
-    uint32_t querysize;
-    if (index->root_n > 0) {
-        
-        query_start = 0;
-        query_end = index->root_n;
-
-        if (query_start == query_end - 1) {
-            hst_pos = query_start;
-        } else {
-
-            // kernel indices
-            if (query_end - query_start <= QUERYSIZE) {
-                left = UINT32_MAX;
-                right = UINT32_MAX;
-                mid = query_start;
-            } else if (query_end - query_start <= 2 * QUERYSIZE) {
-                left = UINT32_MAX;
-                mid = query_start;
-                right = query_end - QUERYSIZE;
-            } else {
-                mid = (uint32_t) (query_end - query_start - QUERYSIZE / 2);
-                left = (mid + query_start - QUERYSIZE) / 2;
-                right = (query_end + mid + QUERYSIZE) / 2;
-            }
-
-            if (right != UINT32_MAX) {
-                querysize = (right - mid < QUERYSIZE) ? right - mid : QUERYSIZE;
-            } else {
-                querysize = (query_end - mid < QUERYSIZE) ? query_end - mid : QUERYSIZE;
-            }
-            hst_pos = query_range(
-                dev_key, key, index->root_pivots,
-                query_start, query_end,
-                left, mid, right, query_buffer,
-                querysize, dev_pos, hst_pos
-            );
-        }
-    } else {
-        hst_pos = 0;
-    }
-
-
-    group_t* root = index->roots + hst_pos;
-
-    hst_pos = get_position_from_group(
-        root, key, index->group_pivots, dev_key, dev_pos, query_buffer  
-    );
-
-    group_t* group = index->groups + hst_pos;
-
-    hst_pos = get_position_from_group(
-        group, key, keys, dev_key, dev_pos,query_buffer
-    );
-
-    return hst_pos;
-
-}
-
-
-inline uint32_t query_range2(
-        ky_t &key, ky_t* keys,
-        uint32_t query_start, uint32_t query_end) {
-
-
-    uint32_t pos = UINT32_MAX;
-    __m256i reg;
-    // magic number 16 <- 512 register / 32 integer
-    //alignas(8) int_t pos_reg[8];
-    //alignas(8) int_t pos_max[8] = { UINT32_MAX };
-
-    auto pos_reg = static_cast<uint32_t*>(_mm_malloc(8 , 32));
-    //auto pos_reg = static_cast<uint32_t*>(_mm_malloc(8 , 32));
-
-
-    #pragma omp parallel num_threads(CPUCORES)
-    while (query_end - query_start < CPUCORES || true) {
-
-        uint32_t thr_blk_len = safe_division(query_end - query_start, CPUCORES);
-        uint32_t wrp_blk_len = safe_division(thr_blk_len, 8);
-        
-        #pragma omp for reduction(min:pos)
-        for (uint32_t thread_i = 0; thread_i < CPUCORES; ++thread_i) {
-
-            memset(pos_reg, 0xFF, 8 * sizeof(uint32_t));
-            for (uint8_t warp_i = 0; warp_i < 8; ++warp_i) {
-                if (memcmp(*(keys + i) + thread_i, &key, sizeof(ky_t)) <=) {
-                    *(pos_reg + warp_i) =
-                        query_start +
-                        thread_i * thr_blk_len +
-                        warp_i   * wrp_blk_len;
-                }
-            }
-
-            reg = _mm256_load_si256((__m256i*) pos_reg);
-            for (uint8_t warp_i = 0; warp_i < 8; ++warp_i) {
-                printf("%u", pos_reg[warp_i]);
-            }
-
-            uint32_t i = query_start + thread_i * thr_blk_len;
-            int8_t cmp = memcmp(*(keys + i) + thread_i, &key, sizeof(ky_t));
-            if (cmp >= 0) {
-                pos = std::min(pos, query_start + thread_i * thr_blk_len);
-            }
-        }
-        _mm256_store_si256((__m256i*) pos_reg, reg);
-    }
-
-    return pos;
-}
-
-inline uint32_t get_position_from_index2(const index_t* index, ky_t &key, ky_t* keys) {
-    //query_range2(key, index->root_pivots, 0, index->root_n);
-    query_range2(key, index->group_pivots, 0, index->group_n);
-}
-
 
 #endif  // _SINDEX_
