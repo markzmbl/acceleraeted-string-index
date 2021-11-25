@@ -33,8 +33,8 @@ int main(int argc, char* argv[]) {
     fp_t et = std::stod(getCmdOption(argv, argv + argc, "-e"));
     uint32_t pt = std::stoul(getCmdOption(argv, argv + argc, "-p"));
     uint32_t batchlen = std::stoul(getCmdOption(argv, argv + argc, "-b"));
-    uint32_t fstep = std::stoul(getCmdOption(argv, argv + argc, "-fs"));
-    uint32_t bstep = std::stoul(getCmdOption(argv, argv + argc, "-bs"));
+    uint32_t fstep = std::stod(getCmdOption(argv, argv + argc, "-fs"));
+    uint32_t bstep = std::stod(getCmdOption(argv, argv + argc, "-bs"));
     uint32_t minsize = std::stoul(getCmdOption(argv, argv + argc, "-ms"));
 
     if (cmdOptionExists(argv, argv + argc, "-v")) {

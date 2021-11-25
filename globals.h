@@ -68,7 +68,7 @@ int get_block_size(cudaDeviceProp prop, int cudacores) {
 
 
 // return enum
-enum GroupStatus {threshold_success, threshold_exceed, out_of_memory, batch_exceed, batch_load, finished};
+enum GroupStatus {threshold_success, threshold_exceed, out_of_memory, batch_exceed, batch_load, finished, too_small};
 
 
 // debug flag
@@ -98,7 +98,7 @@ typedef char ch_t;
 
 // key size
 typedef uint8_t ky_size_t;
-const ky_size_t KEYLEN = 7; 
+const ky_size_t KEYLEN = 32; 
 const ky_size_t ky_size_max = UINT8_MAX;
 
 // key

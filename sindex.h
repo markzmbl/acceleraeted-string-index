@@ -128,6 +128,9 @@ inline GroupStatus calculate_group(
     // feature length without pruning
     n_star = host_max_len - host_min_len + 1;
 
+    if (host_min_len > host_max_len || m <= n_star) {
+        return too_small;
+    }
     
     // -- determine if columns are unequal
     assert(cudaMemset(dev_uneqs, 0, n_star * sizeof(int_t)) == cudaSuccess);
@@ -180,6 +183,10 @@ inline GroupStatus calculate_group(
         return threshold_exceed;
     } else if (force) {
         n = min(feat_thresh, n);
+    }
+
+    if (m <= n) {
+        return too_small;
     }
 
     // take bias into account
@@ -467,7 +474,6 @@ inline uint32_t grouping(
     uint32_t processed = 0;
     uint32_t start_i, end_i;
     start_i = end_i = 0;
-
     std::vector<group_t> group_vector;
     GroupStatus result = threshold_success;
 
@@ -565,6 +571,8 @@ inline uint32_t grouping(
                     d_work, h_work, d_work_size, h_work_size, dev_acc_error, dev_min_error, dev_max_error, force
                 );
 
+
+
                 assert (result != out_of_memory);
 
                 ++fsteps;
@@ -595,6 +603,18 @@ inline uint32_t grouping(
                     hst_feat_indices, dev_feat_indices, mutex, tau, dev_info,
                     d_work, h_work, d_work_size, h_work_size, dev_acc_error, dev_min_error, dev_max_error, force
                 );
+                while (result == too_small) {
+                    ++end_i;
+                    result = calculate_group(
+                        keys, hst_pair_lens, dev_keys, dev_pair_lens, &group,
+                        processed, start_i, end_i - start_i, pt, et, maxsamples,
+                        cusolverH, cusolverP, cublasH,
+                        dev_min_len, dev_max_len, A, B, hst_uneqs, dev_uneqs,
+                        hst_feat_indices, dev_feat_indices, mutex, tau, dev_info,
+                        d_work, h_work, d_work_size, h_work_size, dev_acc_error, dev_min_error, dev_max_error, force
+                );
+                }
+
 
                 assert(result != out_of_memory);
 
@@ -710,7 +730,7 @@ inline index_t* create_index(
     size_t total_space = 0;
     cudaMemGetInfo(&free_space, &total_space);
     // debug video output
-    free_space -= 50'000'000;
+    free_space -= 200'000'000;
     // A(maxsamples x (feat_threash + 1)) and B(maxsamples x 1)
     uint32_t maxsamples_max = free_space / ((pt + 2) * sizeof(fp_t));
     uint32_t maxsamples_min = maxsamples_max;

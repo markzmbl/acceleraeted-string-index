@@ -86,7 +86,7 @@ __global__ void rmq_kernel(
     for (uint32_t thid_i = thid; thid_i < m_1_star; thid_i += gridDim.x * blockDim.x) {
 
         uint32_t key_i0 = (uint32_t) (((fp_t) thid_i) * step);
-        //if ((uint32_t)thid_i != key_i0) printf("rmq\t%u\t%u\n", thid_i, key_i0);
+        //if (m_1_star < 1000) printf("rmq\t%u\t%u\n", thid_i, *(dev_pair_lens + key_i0));
         //if (thid_i == 500 && thid_i != key_i0) printf("rmq\t%u\t%u\n", thid_i, key_i0);
 
 

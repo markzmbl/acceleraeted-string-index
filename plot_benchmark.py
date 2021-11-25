@@ -22,10 +22,11 @@ def read_comments(filename):
     return comments
 
 def main(file, start, end):
-    columns = {"avg", "size", "mins", "group_n", "root_n", "time"}
+    csv_columns = {"mins", "group_n", "root_n", "time", "avgsize"}
+    columns = {"avg", "size", "mins", "group_n", "root_n", "time", "avgsize"}
     path0 = "./csv/query/"
     path1 = "./csv/grouping/"
-    _, _, filenames = next(os.walk(path0))
+    _, _, filenames = next(os.walk(path1))
     datasets = []
     for filename in filenames:
         if file in filename:
@@ -36,10 +37,16 @@ def main(file, start, end):
         key = dataset.split("_")[2]
         if (start.split("e")[1] == key.split("e")[1] == end.split("e")[1] and
                 int(start.split("e")[0]) <= int(key.split("e")[0]) <= int(end.split("e")[0])):
-            comment = read_comments(path0+dataset)
-            comment.update(read_comments(path1+dataset))
-            if columns <= set(comment.keys()):
+            comment = read_comments(path1+dataset)
+            #comment.update(read_comments(path0+dataset))
+            # average group size 
+            df = pd.read_csv(path1+dataset, comment="#")
+            df = df[df["type"] == "group"]
+            comment["avgsize"] = df["m"].mean()
+
+            if csv_columns <= set(comment.keys()):
                 comments[float(key)] = comment
+
     
     df = pd.DataFrame(
         index=comments.keys(),

@@ -6,16 +6,16 @@ NVCC_FLAGS=-Xcompiler "-march=native -mtune=native -fopenmp -mavx" -O2 --std c++
 all: benchmark-create benchmark-create-debug benchmark-query benchmark-query-debug
 
 benchmark-create: benchmark_create.cu kernels.cuh globals.h helpers.h sindex.h
-	$(NVCC) $(NVCC_FLAGS) -o benchmark-create benchmark_create.cu
+	$(NVCC) $(NVCC_FLAGS) -o benchmark-create32 benchmark_create.cu
 
 benchmark-create-debug: benchmark_create.cu kernels.cuh globals.h helpers.h sindex.h
-	$(NVCC) $(NVCC_FLAGS_DEBUG) -o benchmark-create-debug benchmark_create.cu
+	$(NVCC) $(NVCC_FLAGS_DEBUG) -o benchmark-create-debug32 benchmark_create.cu
 
 benchmark-query: benchmark_query.cu kernels.cuh globals.h helpers.h sindex.h
-	$(NVCC) $(NVCC_FLAGS) -o benchmark-query benchmark_query.cu
+	$(NVCC) $(NVCC_FLAGS) -o benchmark-query32 benchmark_query.cu
 
 benchmark-query-debug: benchmark_query.cu kernels.cuh globals.h helpers.h sindex.h
-	$(NVCC) $(NVCC_FLAGS_DEBUG) -o benchmark-query-debug benchmark_query.cu
+	$(NVCC) $(NVCC_FLAGS_DEBUG) -o benchmark-query-debug32 benchmark_query.cu
 
 clean:
 	rm -f benchmark-create benchmark-create-debug benchmark-query benchmark-query-debug
